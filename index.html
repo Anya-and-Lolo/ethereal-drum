@@ -1,0 +1,745 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111827" />
+  <meta name="description" content="A configurable tongue drum song trainer with centre-drum guidance and optional microphone note recognition." />
+  <title>Ethereal Drum Trainer</title>
+  <link rel="manifest" href="app-files/manifest.webmanifest" />
+  <link rel="stylesheet" href="app-files/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true">◉</div>
+        <div>
+          <h1>Ethereal Drum</h1>
+          <p>Song trainer</p>
+        </div>
+        <button class="icon-btn sidebar-close" id="sidebarClose" aria-label="Close songs panel">×</button>
+      </div>
+
+      <div class="sidebar-actions">
+        <button class="primary-btn" id="newSongBtn">＋ New song</button>
+        <button class="soft-btn" id="importBtn">Import song</button>
+        <button class="library-btn" id="libraryBtn" type="button">
+          <span><b aria-hidden="true">♫</b> Community songs</span>
+          <em id="libraryCountBadge">0</em>
+        </button>
+        <input id="importFile" type="file" accept=".drumsong" hidden />
+      </div>
+
+      <label class="search-wrap">
+        <span>Search songs</span>
+        <input id="songSearch" type="search" placeholder="Find a song..." />
+      </label>
+
+      <div class="song-list" id="songList" aria-live="polite"></div>
+
+      <div class="sidebar-footer">
+        <button class="text-btn" id="exportBtn">Export selected song</button>
+        <button class="text-btn danger" id="deleteBtn">Delete selected song</button>
+        <button class="text-btn" id="restoreDemosBtn" hidden>Restore removed catalogue songs</button>
+      </div>
+    </aside>
+
+    <button class="sidebar-scrim" id="sidebarScrim" type="button" aria-label="Close songs menu"></button>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" id="menuBtn" aria-label="Open songs panel">☰</button>
+        <div class="song-heading">
+          <p class="eyebrow">NOW PRACTISING</p>
+          <div class="song-title-row">
+            <h2 id="currentTitle">Moonlit Steps</h2>
+            <span id="currentDifficulty" class="difficulty-badge" data-level="easy">Easy difficulty</span>
+            <span id="currentCollection" class="collection-badge" hidden></span>
+          </div>
+        </div>
+        <div class="top-actions">
+          <a class="donate-btn" href="https://ko-fi.com/anya_and_lolo" target="_blank" rel="noopener noreferrer" aria-label="Donate on Ko-fi" title="Support Ethereal Drum on Ko-fi">
+            <img src="app-files/kofi-logo.webp" alt="" aria-hidden="true" />
+            <span>Donate</span>
+          </a>
+          <button class="icon-btn help-tour-btn" id="helpTourBtn" type="button" aria-label="Open app walkthrough" title="Help and walkthrough">?</button>
+          <button class="soft-btn compact" id="editBtn">Edit song</button>
+          <button class="soft-btn compact" id="settingsBtn">My Drum</button>
+        </div>
+      </header>
+
+      <section class="trainer-grid" id="trainerGrid">
+        <div class="trainer-card">
+          <div class="trainer-toolbar">
+            <div class="toolbar-controls">
+              <div class="segmented" role="group" aria-label="Training mode">
+                <button class="segment active" data-mode="demo">Demo</button>
+                <button class="segment" data-mode="practice">Practice</button>
+                <button class="segment" data-mode="wait">Wait for note</button>
+                <button class="segment" data-mode="tuner">Tuner</button>
+              </div>
+              <div class="display-control">
+                <span>Display</span>
+                <div class="segmented view-segmented" role="group" aria-label="Note display mode">
+                  <button class="view-segment active" data-view="radial">Drum centre</button>
+                  <button class="view-segment" data-view="lanes">Falling lanes</button>
+                </div>
+              </div>
+            </div>
+            <div class="stat-pills">
+              <span class="stat-pill" id="scorePill" data-tone="neutral"><b id="scoreValue">0%</b> score</span>
+              <span class="stat-pill" id="streakPill" data-tone="neutral"><b id="streakValue">0</b> streak</span>
+              <span class="stat-pill" id="notesLeftPill" data-tone="notes"><b id="notesLeftValue">0</b> notes left</span>
+            </div>
+          </div>
+
+          <div class="note-stage" id="noteStage">
+            <canvas id="noteCanvasBack" aria-hidden="true"></canvas>
+            <canvas id="noteCanvas" aria-label="Animated note preview"></canvas>
+            <button class="focus-mode-btn" id="focusModeBtn" type="button" aria-pressed="false" aria-label="Enter focus mode" title="Focus mode">
+              <span aria-hidden="true">⛶</span><b>Focus Mode</b>
+            </button>
+            <div class="stage-drum-wrap" id="stageDrumWrap" aria-label="Interactive centre drum"></div>
+            <div class="high-drum-wrap" id="highDrumWrap" aria-label="High 8-note companion drum"></div>
+            <div class="stage-overlay top-left">
+              <span id="totalNotesLabel">0 notes total</span>
+              <span id="tempoLabel">72 BPM</span>
+            </div>
+            <div class="tuner-panel" id="tunerPanel" hidden aria-live="polite">
+              <div class="tuner-reading">
+                <span>LIVE TUNER</span>
+                <strong id="tunerLabel">...</strong>
+                <div>
+                  <b id="tunerNoteName">Strike a tongue</b>
+                  <small id="tunerCents">Turn on the microphone to begin</small>
+                </div>
+              </div>
+              <div class="tuner-meter-wrap">
+                <div class="tuner-meter" id="tunerMeter" role="meter" aria-label="Pitch accuracy" aria-valuemin="-50" aria-valuemax="50" aria-valuenow="0">
+                  <span class="tuner-zone"></span>
+                  <i id="tunerNeedle"></i>
+                </div>
+                <div class="tuner-scale"><span>Flat</span><span>In tune</span><span>Sharp</span></div>
+              </div>
+            </div>
+            <div class="count-in" id="countIn" hidden>3</div>
+            <div class="hit-label">PLAY</div>
+          </div>
+
+          <div class="progress-wrap">
+            <span id="elapsedLabel">0:00</span>
+            <div class="progress-track-shell">
+              <input id="progress" type="range" min="0" max="1000" value="0" aria-label="Song position" />
+              <i class="ab-marker marker-a" id="abMarkerA" hidden aria-hidden="true"></i>
+              <i class="ab-marker marker-b" id="abMarkerB" hidden aria-hidden="true"></i>
+            </div>
+            <span id="durationLabel">0:00</span>
+          </div>
+
+          <div class="ab-loop-row" id="abLoopRow">
+            <div class="ab-loop-controls" role="group" aria-label="A to B section loop">
+              <button class="mini-loop-btn" id="setABtn" type="button">Set A</button>
+              <button class="mini-loop-btn" id="setBBtn" type="button">Set B</button>
+              <button class="mini-loop-btn accent" id="abLoopBtn" type="button" aria-pressed="false" disabled>Loop A–B</button>
+              <button class="mini-loop-btn clear" id="clearABBtn" type="button" disabled>Clear</button>
+            </div>
+            <span class="ab-loop-status" id="abLoopStatus">Set A and B from the timeline to practise a section.</span>
+          </div>
+
+          <div class="transport">
+            <button class="round-btn small" id="loopBtn" aria-label="Loop song" aria-pressed="false" title="Loop song">
+              <svg class="loop-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M17 2l3 3-3 3"></path>
+                <path d="M3 11V9a4 4 0 0 1 4-4h13"></path>
+                <path d="M7 22l-3-3 3-3"></path>
+                <path d="M21 13v2a4 4 0 0 1-4 4H4"></path>
+              </svg>
+            </button>
+            <button class="round-btn play" id="playBtn" aria-label="Play">▶</button>
+            <button class="round-btn small" id="metronomeBtn" aria-label="Toggle metronome"><span class="metronome-icon" aria-hidden="true"><span class="metronome-body"></span><span class="metronome-arm"></span></span></button>
+          </div>
+
+          <div class="speed-row">
+            <label>
+              Speed
+              <select id="speedSelect">
+                <option value="0.5">0.5×</option>
+                <option value="0.75">0.75×</option>
+                <option value="1" selected>1×</option>
+                <option value="1.25">1.25×</option>
+                <option value="1.5">1.5×</option>
+              </select>
+            </label>
+            <label class="toggle-label">
+              <input id="countInToggle" type="checkbox" checked />
+              <span>Count-in</span>
+            </label>
+            <button class="mic-toggle" id="micBtn" type="button" aria-pressed="false">
+              <svg class="mic-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="11" rx="3"></rect><path d="M5.5 10.5a6.5 6.5 0 0 0 13 0"></path><path d="M12 17v4"></path><path d="M8.6 21h6.8"></path></svg>
+              Microphone off
+            </button>
+            <span class="mic-status" id="micStatus" aria-live="polite">Use in Practice or Wait mode</span>
+            <p id="modeHint">Listen and watch the notes.</p>
+          </div>
+        </div>
+
+        <aside class="practice-card" id="practiceCard">
+          <div class="practice-head">
+            <div>
+              <p class="eyebrow">YOUR DRUM</p>
+              <h3 id="instrumentTitle">6-note C major</h3>
+            </div>
+            <span class="keyboard-hint" id="keyboardHint">Keys 1-9</span>
+          </div>
+
+          <div class="drum-wrap" id="drumWrap" aria-label="Interactive tongue drum"></div>
+
+          <div class="next-note-card">
+            <span>Next note</span>
+            <strong id="nextNoteValue">1</strong>
+            <small id="nextNoteTime">Ready</small>
+          </div>
+
+        </aside>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="editorDialog" class="dialog large-dialog">
+    <form method="dialog" id="editorForm" novalidate>
+      <div class="dialog-head">
+        <div class="editor-title-lockup">
+          <p class="editor-kicker" aria-label="Song Builder"><span>SONG</span><span>BUILDER</span></p>
+          <h2 id="editorHeading">Create a song</h2>
+        </div>
+        <div class="dialog-head-actions">
+          <button type="button" class="info-btn editor-guide-btn" id="editorGuideBtn" aria-haspopup="dialog">
+            <span class="info-badge" aria-hidden="true">i</span>Numbers and note guide
+          </button>
+          <button type="button" class="icon-btn" data-close-dialog="editorDialog" aria-label="Close">×</button>
+        </div>
+      </div>
+
+      <div class="draft-notice" id="draftNotice" hidden>
+        <span id="draftNoticeText">Unsaved draft restored.</span>
+        <button type="button" class="text-tool-btn" id="discardDraftBtn">Discard draft</button>
+      </div>
+
+      <div class="form-grid song-options-grid">
+        <label><span class="field-label-row"><span>Song title</span><span class="label-hint">use (brackets) to group songs</span></span><input id="songTitleInput" required maxlength="80" placeholder="Arirang (Asian Folk Songs)" /></label>
+        <label>Tempo speed (BPM)<select id="songBpmInput" required>
+          <option value="30">30 BPM (Very slow)</option>
+          <option value="60">60 BPM (Very slow)</option>
+          <option value="80">80 BPM (Slow)</option>
+          <option value="98">98 BPM (Slow)</option>
+          <option value="120" selected>120 BPM (Medium)</option>
+          <option value="128">128 BPM (Medium)</option>
+          <option value="140">140 BPM (Fast)</option>
+          <option value="168">168 BPM (Fast)</option>
+          <option value="172">172 BPM (Very fast)</option>
+          <option value="240">240 BPM (Very fast)</option>
+        </select></label>
+        <label>Song folder<select id="songFolderSelect">
+          <option value="library" selected>Song library</option>
+          <option value="demo">Demo songs</option>
+        </select></label>
+        <label>Song scale<select id="songScaleSelect">
+          <option value="major">Major</option>
+          <option value="major-pentatonic">Major pentatonic</option>
+          <option value="minor-pentatonic">Minor pentatonic</option>
+          <option value="any">Any tuning, position based</option>
+        </select></label>
+      </div>
+
+      <div class="live-compose">
+        <div>
+          <h3>Tap to compose</h3>
+          <p>Tap notes below, then add chords, rests, or bar lines at the cursor.</p>
+        </div>
+        <div class="compose-actions">
+          <label class="compact-switch note-names-switch" for="showPitchNamesToggle">
+            <span class="compact-switch-label">Note names</span>
+            <input id="showPitchNamesToggle" type="checkbox">
+            <span class="onoff-track" aria-hidden="true">
+              <span class="onoff-state on">ON</span>
+              <span class="onoff-state off">OFF</span>
+              <i></i>
+            </span>
+          </label>
+          <button type="button" class="soft-btn compact" id="appendChordBtn">Add chord</button>
+          <button type="button" class="soft-btn compact" id="appendRestBtn">Add rest</button>
+          <button type="button" class="soft-btn compact" id="appendBarBtn">Add bar</button>
+        </div>
+      </div>
+      <div class="mini-pads" id="miniPads"></div>
+
+      <div class="sequence-section">
+        <div class="sequence-label-row">
+          <label for="sequenceInput">Note sequence</label>
+          <div class="sequence-label-tools">
+            <label class="compact-switch expressive-timing-switch" for="expressiveTimingToggle">
+              <span class="compact-switch-label">Music sheet (Jianpu)</span>
+              <input id="expressiveTimingToggle" type="checkbox">
+              <span class="onoff-track" aria-hidden="true">
+                <span class="onoff-state on">ON</span>
+                <span class="onoff-state off">OFF</span>
+                <i></i>
+              </span>
+            </label>
+            <button type="button" class="text-tool-btn" id="clearSequenceBtn">Clear notes</button>
+            <button type="button" class="text-tool-btn" id="copySequenceBtn" title="Copy the note sequence to the clipboard">Copy text</button>
+            <button type="button" class="text-tool-btn" id="exportSheetBtn" title="Open the print dialog and choose Save as PDF">Export PDF</button>
+          </div>
+        </div>
+        <div class="sequence-workspace">
+          <div class="sequence-field">
+            <div class="sequence-backdrop" id="sequenceBackdrop" aria-hidden="true"></div>
+            <div class="sequence-hints" aria-hidden="true">
+              <b>How to type <small>(keyboard)</small></b>
+              <p><span class="hint-keys"><kbd>1-7</kbd></span><span>Type numbers for notes</span></p>
+              <p><span class="hint-keys"><kbd>'</kbd></span><span>After a note: higher octave</span></p>
+              <p><span class="hint-keys"><kbd>.</kbd></span><span>After a note: lower octave</span></p>
+              <p><span class="hint-keys"><kbd>+</kbd></span><span>Between notes: play together</span></p>
+              <p><span class="hint-keys"><kbd>0</kbd><kbd>-</kbd></span><span>Add a rest</span></p>
+              <p><span class="hint-keys"><kbd>|</kbd></span><span>Add a bar line</span></p>
+              <p><span class="hint-keys"><kbd>_</kbd></span><span>After a note: quick</span></p>
+              <p><span class="hint-keys"><kbd>=</kbd></span><span>After a note: very quick</span></p>
+            </div>
+            <textarea id="sequenceInput" rows="5" wrap="soft" spellcheck="false" placeholder="1 1 3 | 5 5 3 - | 2+4 1 -"></textarea>
+          </div>
+
+          <section class="timing-editor" id="timingEditor" hidden>
+            <div class="timing-editor-head">
+              <div>
+                <h3>Music sheet (Jianpu)</h3>
+                <p id="selectedTimingLabel">Click a number. Underlines make notes quicker; extension dashes make them longer.</p>
+              </div>
+              <div class="timing-choices" id="timingChoiceGroup" aria-label="Timing choices">
+                <button type="button" data-duration="0.25" title="Sixteenth note: four notes fit into one regular beat" disabled>Very quick</button>
+                <button type="button" data-duration="0.5" title="Eighth note: two notes fit into one regular beat" disabled>Quick</button>
+                <button type="button" data-duration="1" title="Quarter note: one note fills one regular beat" disabled>Regular</button>
+                <button type="button" data-duration="2" title="Half note: the note lasts for two regular beats" disabled>Half note</button>
+                <button type="button" data-duration="4" title="Whole note: the note lasts for four regular beats" disabled>Whole note</button>
+              </div>
+            </div>
+            <div class="timing-sheet-wrap">
+              <div class="timing-sheet-label" aria-hidden="true">Jianpu timing view</div>
+              <div class="timing-token-strip" id="timingTokenStrip" aria-label="Clickable Jianpu numbered music sheet"></div>
+            </div>
+          </section>
+        </div>
+      </div>
+      <p class="helper-copy">
+        Use the keyboard guide above or tap the compose controls. Line breaks are added automatically for readability.
+      </p>
+
+      <div class="dialog-actions">
+        <button type="submit" class="primary-btn" id="saveSongBtn">Save song</button>
+        <div class="dialog-action-secondary">
+          <button type="button" class="soft-btn" data-close-dialog="editorDialog">Cancel</button>
+          <button type="button" class="danger-btn delete-song-btn" id="deleteEditorBtn" hidden>Delete song</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="songGuideDialog" class="dialog guide-dialog">
+    <form method="dialog">
+      <div class="dialog-head">
+        <div class="editor-title-lockup">
+          <p class="editor-kicker" aria-label="Song Builder"><span>SONG</span><span>BUILDER</span></p>
+          <h2>Numbers and note guide</h2>
+        </div>
+        <button type="button" class="icon-btn" data-close-dialog="songGuideDialog" aria-label="Close">×</button>
+      </div>
+      <div class="pitch-info song-guide-content" id="songGuideContent"></div>
+      <div class="dialog-actions guide-dialog-actions">
+        <button type="button" class="primary-btn" data-close-dialog="songGuideDialog">Close guide</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="songLibraryDialog" class="dialog large-dialog song-library-dialog">
+    <div class="song-library-shell">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">COMMUNITY GALLERY</p>
+          <h2>Community songs</h2>
+        </div>
+        <button type="button" class="icon-btn" data-close-dialog="songLibraryDialog" aria-label="Close">×</button>
+      </div>
+      <div class="library-tabs difficulty-library-tabs" role="tablist" aria-label="Filter community songs by difficulty">
+        <button type="button" class="library-tab active" id="libraryTabAll" data-library-tab="all" role="tab" aria-selected="true">All <span id="communitySongsCount">0</span></button>
+        <button type="button" class="library-tab" id="libraryTabEasy" data-library-tab="easy" role="tab" aria-selected="false">Easy <span id="communityEasyCount">0</span></button>
+        <button type="button" class="library-tab" id="libraryTabMedium" data-library-tab="medium" role="tab" aria-selected="false">Medium <span id="communityMediumCount">0</span></button>
+        <button type="button" class="library-tab" id="libraryTabHard" data-library-tab="hard" role="tab" aria-selected="false">Hard <span id="communityHardCount">0</span></button>
+        <button type="button" class="library-tab" id="libraryTabExpert" data-library-tab="expert" role="tab" aria-selected="false">Expert <span id="communityExpertCount">0</span></button>
+      </div>
+      <label class="library-search">
+        <span>Search community songs</span>
+        <input id="librarySearch" type="search" placeholder="Search by song name..." />
+      </label>
+      <div class="library-community-banner" id="libraryCommunityBanner">
+        <div><strong>Community gallery</strong><span>Browse approved songs, or submit one of your own for review.</span></div>
+        <button type="button" class="community-info-btn library-community-action" id="libraryCommunityInfoBtn">Submission info</button>
+      </div>
+      <div class="album-grid" id="libraryGrid" aria-live="polite"></div>
+      <div class="library-empty" id="libraryEmpty" hidden></div>
+    </div>
+  </dialog>
+
+  <dialog id="communityDialog" class="dialog community-dialog">
+    <form method="dialog">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">CURATED COLLECTION</p>
+          <h2>Community gallery</h2>
+        </div>
+        <button type="button" class="icon-btn" data-close-dialog="communityDialog" aria-label="Close">×</button>
+      </div>
+      <div class="community-dialog-copy">
+        <p>Anyone can browse and play approved community songs without creating an account. The gallery is read-only, so visitors cannot change the public collection.</p>
+        <h3>Submit a song for approval</h3>
+        <ol>
+          <li>Create or import the song in your private Song library.</li>
+          <li>Select it and choose Submit selected song.</li>
+          <li>Wait for the upload to reach 100%.</li>
+        </ol>
+        <p>The song is sent to a private review folder. The owner must approve it before it can be placed in the Community gallery. Submission does not guarantee publication.</p>
+        <p class="community-selection" id="communitySelection"></p>
+        <div class="community-upload-progress" id="communityUploadProgress" hidden aria-live="polite">
+          <div class="community-upload-status">
+            <span id="communityUploadStatus">Preparing submission...</span>
+            <strong id="communityUploadPercent">0%</strong>
+          </div>
+          <div class="community-progress-track" id="communityProgressTrack" role="progressbar" aria-label="Community submission progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <i id="communityProgressFill"></i>
+          </div>
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="soft-btn" data-close-dialog="communityDialog">Close</button>
+        <button type="button" class="primary-btn" id="submitCommunityBtn">Submit selected song</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="myDrumDialog" class="dialog large-dialog my-drum-dialog">
+    <div class="my-drum-shell">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">MY DRUM</p>
+          <h2 id="myDrumTitle">15-note D Major</h2>
+        </div>
+        <button type="button" class="icon-btn" data-close-dialog="myDrumDialog" aria-label="Close">×</button>
+      </div>
+      <p class="my-drum-intro">This is the instrument the trainer is currently mapped to. Check the numbers, pitches and colors against the physical drum in front of you.</p>
+      <div class="my-drum-badges" id="myDrumBadges"></div>
+      <div class="my-drum-layout">
+        <section class="my-drum-visual-card">
+          <div class="my-drum-preview" id="myDrumPreview" aria-label="Your configured drum"></div>
+        </section>
+        <section class="my-drum-note-card">
+          <div class="my-drum-section-head"><strong>Main drum notes</strong><span id="myDrumNoteCount"></span></div>
+          <div class="my-drum-note-list" id="myDrumNoteList"></div>
+          <div class="my-drum-companion" id="myDrumCompanion" hidden>
+            <div class="my-drum-section-head"><strong>Companion drum</strong><span>8 high notes</span></div>
+            <div class="my-companion-disc" id="myDrumCompanionPreview"></div>
+          </div>
+        </section>
+      </div>
+      <div class="my-drum-backup-note">Browser settings are stored on this device. Export a backup if you have customised your drum.</div>
+      <div class="dialog-actions my-drum-actions">
+        <div class="my-drum-backup-actions">
+          <button type="button" class="soft-btn" id="exportInstrumentBtn">Export drum settings</button>
+          <button type="button" class="text-tool-btn" id="importInstrumentBtn">Import settings</button>
+          <input id="importInstrumentFile" type="file" accept=".drumsettings,.json,application/json" hidden />
+        </div>
+        <button type="button" class="primary-btn" id="editInstrumentBtn">Edit instrument</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="settingsDialog" class="dialog">
+    <form method="dialog" id="settingsForm" novalidate>
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">INSTRUMENT</p>
+          <h2>Configure your drum</h2>
+        </div>
+        <button type="button" class="icon-btn" data-close-dialog="settingsDialog" aria-label="Close">×</button>
+      </div>
+
+      <div class="form-grid instrument-options">
+        <label>
+          Instrument key
+          <select id="instrumentKeySelect">
+            <option value="C">C</option>
+            <option value="D">D</option>
+          </select>
+        </label>
+        <label>
+          Scale type
+          <select id="scaleTypeSelect">
+            <option value="major">Major</option>
+            <option value="major-pentatonic">Major pentatonic</option>
+            <option value="minor-pentatonic">Minor pentatonic</option>
+            <option value="custom">Custom tuning</option>
+          </select>
+        </label>
+        <label>
+          Number of tongues
+          <select id="noteCountSelect">
+            <option value="6">6 notes</option>
+            <option value="8">8 notes</option>
+            <option value="11">11 notes</option>
+            <option value="13">13 notes</option>
+            <option value="15">15 notes</option>
+          </select>
+        </label>
+        <label>
+          Lowest note octave
+          <select id="rootOctaveSelect">
+            <option value="2">Octave 2, very low</option>
+            <option value="3">Octave 3, low</option>
+            <option value="4">Octave 4, middle</option>
+            <option value="5">Octave 5, high</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="high-drum-option" id="highDrumOption">
+        <div class="high-drum-option-copy">
+          <strong class="high-drum-option-title">High 8-note companion drum</strong>
+          <span class="high-drum-availability" id="highDrumAvailability">Choose 15 notes above to use the companion drum</span>
+        </div>
+        <div class="high-drum-switches">
+          <label class="compact-switch" for="highDrumToggle">
+            <span class="compact-switch-label">Use</span>
+          <input id="highDrumToggle" type="checkbox">
+            <span class="onoff-track" aria-hidden="true">
+              <span class="onoff-state on">ON</span>
+              <span class="onoff-state off">OFF</span>
+              <i></i>
+            </span>
+          </label>
+          <label class="compact-switch" for="highDrumAlwaysToggle">
+            <span class="compact-switch-label">Always show</span>
+            <input id="highDrumAlwaysToggle" type="checkbox">
+            <span class="onoff-track" aria-hidden="true">
+              <span class="onoff-state on">ON</span>
+              <span class="onoff-state off">OFF</span>
+              <i></i>
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div class="tuning-head">
+        <span class="tuning-head-title">Main drum notes and colors</span>
+        <button type="button" class="info-btn" id="pitchInfoBtn" aria-haspopup="dialog" aria-controls="songGuideDialog">
+          <span class="info-badge" aria-hidden="true">i</span>Numbers and note guide
+        </button>
+      </div>
+      <div class="pitch-info" id="pitchInfo" hidden>
+        <p>Numbers with a dot above are high notes, numbers without dots are middle notes, and numbers with a dot below are low notes. Setting <strong>Pitch</strong> puts the dot on the tongue for you.</p>
+        <div class="pitch-scale">
+          <span class="pitch-band">
+            <span class="jianpu"><b class="oct-down">3</b><b class="oct-down">4</b><b class="oct-down">5</b><b class="oct-down">6</b><b class="oct-down">7</b></span>
+            <em>low</em>
+          </span>
+          <span class="pitch-band is-plain">
+            <span class="jianpu"><b>1</b><b>2</b><b>3</b><b>4</b><b>5</b><b>6</b><b>7</b></span>
+            <em>middle</em>
+          </span>
+          <span class="pitch-band">
+            <span class="jianpu"><b class="oct-up">1</b><b class="oct-up">2</b><b class="oct-up">3</b></span>
+            <em>high</em>
+          </span>
+        </div>
+        <section class="jianpu-guide"><div class="note-guide-head">
+<strong>Jianpu quick guide</strong>
+<span>How the sheet works in this app</span>
+</div><div class="jianpu-extra-copy">
+<article class="jianpu-copy-block">
+<h4>What is Jianpu?</h4>
+<p>Jianpu is a numbered music notation system. The numbers <strong>1-7</strong> represent the notes of the scale, so the same melody can be reused in different keys.</p>
+<ul class="jianpu-syllable-list">
+<li><strong>1</strong> = Do</li>
+<li><strong>2</strong> = Re</li>
+<li><strong>3</strong> = Mi</li>
+<li><strong>4</strong> = Fa</li>
+<li><strong>5</strong> = So</li>
+<li><strong>6</strong> = La</li>
+<li><strong>7</strong> = Ti</li>
+</ul>
+</article>
+<article class="jianpu-copy-block">
+<h4>Jianpu in different keys</h4>
+<div class="jianpu-key-grid">
+<div class="jianpu-key-card"><strong>C major</strong><small>1 = C</small><span>C D E F G A B</span></div>
+<div class="jianpu-key-card"><strong>G major</strong><small>1 = G</small><span>G A B C D E F#</span></div>
+<div class="jianpu-key-card"><strong>D major</strong><small>1 = D</small><span>D E F# G A B C#</span></div>
+<div class="jianpu-key-card"><strong>F major</strong><small>1 = F</small><span>F G A Bb C D E</span></div>
+</div>
+</article>
+</div><div class="jianpu-guide-grid">
+<article class="jianpu-tip-card">
+<strong>Rhythm</strong>
+<div class="jianpu-timing-row">
+<span class="jianpu-sample-token">
+<span class="jianpu-sample-number">5</span>
+<span class="jianpu-sample-spacer"></span>
+</span>
+<span class="jianpu-tip-text"><b>Regular (quarter note)</b><small>No underline = one regular beat</small></span>
+</div>
+<div class="jianpu-timing-row">
+<span class="jianpu-sample-token">
+<span class="jianpu-sample-number">5</span>
+<span class="jianpu-sample-beams one"></span>
+</span>
+<span class="jianpu-tip-text"><b>Quick (eighth note)</b><small>One underline = two notes in one regular beat</small></span>
+</div>
+<div class="jianpu-timing-row">
+<span class="jianpu-sample-token">
+<span class="jianpu-sample-number">5</span>
+<span class="jianpu-sample-beams two"></span>
+</span>
+<span class="jianpu-tip-text"><b>Very quick (sixteenth note)</b><small>Two underlines = four notes in one regular beat</small></span>
+</div>
+<div class="jianpu-timing-row">
+<span class="jianpu-sample-token extended">
+<span class="jianpu-sample-number">5</span>
+<span class="jianpu-sample-dashes"><i></i></span>
+</span>
+<span class="jianpu-tip-text"><b>Half note</b><small>One dash to the right = two beats</small></span>
+</div>
+<div class="jianpu-timing-row">
+<span class="jianpu-sample-token extended">
+<span class="jianpu-sample-number">5</span>
+<span class="jianpu-sample-dashes"><i></i><i></i><i></i></span>
+</span>
+<span class="jianpu-tip-text"><b>Whole note</b><small>Three dashes to the right = four beats</small></span>
+</div>
+<p class="jianpu-tip-note">Underlines make notes shorter. Extension dashes to the right make notes longer.</p>
+</article>
+<article class="jianpu-tip-card">
+<strong>Octave dots</strong>
+<div class="jianpu-octave-grid">
+<span class="jianpu-octave-chip"><b class="oct-down">1</b><small>Low</small></span>
+<span class="jianpu-octave-chip"><b>1</b><small>Middle</small></span>
+<span class="jianpu-octave-chip"><b class="oct-up">1</b><small>High</small></span>
+<span class="jianpu-octave-chip"><b class="oct-up oct-up-double">1</b><small>Very high</small></span>
+</div>
+<p class="jianpu-tip-note">A dot above raises the number by one octave. A dot below lowers it by one octave.</p>
+</article>
+</div><p class="note-guide-caption">On the sheet, <strong>0</strong> means a rest, and longer rests repeat 0. In the song data, <strong>+</strong> means play the numbers together as a chord, and the sheet shows those simultaneous notes stacked one above another.</p></section>
+        <div class="note-guide">
+          <div class="note-guide-head">
+            <strong>D and C major note guide</strong>
+            <span>Middle tonic octave: <b id="noteGuideOctave">4</b></span>
+          </div>
+          <div class="note-guide-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Number</th>
+                  <th scope="col">D instrument</th>
+                  <th scope="col">C instrument</th>
+                </tr>
+              </thead>
+              <tbody id="noteGuideBody"></tbody>
+            </table>
+          </div>
+          <p class="note-guide-caption">Notes marked companion extend above the main 15-note drum. The numbered song stays the same when you change key.</p>
+        </div>
+      </div>
+
+      <div class="tuning-grid" id="tuningGrid"></div>
+      <p class="helper-copy"><strong>Pitch</strong> marks a tongue as belonging to the octave above or below the middle one, which prints the small dot over or under the number. It is set for you from the note you pick. The color square opens a palette and is used for that tongue everywhere: flying notes, expected-note highlights and pressed tongues.</p>
+
+      <section class="companion-tuning-section" id="companionTuningSection" hidden>
+        <div class="companion-tuning-head">
+          <strong>Companion notes and colors</strong>
+          <span>8 tongues</span>
+        </div>
+        <div class="tuning-grid companion-tuning-grid" id="companionTuningGrid"></div>
+      </section>
+
+      <div class="dialog-actions instrument-dialog-actions">
+        <button type="button" class="soft-btn" data-close-dialog="settingsDialog">Cancel</button>
+        <button type="button" class="text-tool-btn instrument-export-btn" id="exportInstrumentFromSettingsBtn">Export my drum settings</button>
+        <button type="submit" class="primary-btn" id="saveSettingsBtn">Save instrument</button>
+      </div>
+    </form>
+  </dialog>
+
+
+  <dialog class="dialog result-dialog" id="resultDialog">
+    <div class="result-card">
+      <div class="result-icon" aria-hidden="true">✓</div>
+      <p class="eyebrow">SESSION COMPLETE</p>
+      <h2 id="resultTitle">Song complete</h2>
+      <p class="result-summary" id="resultSummary">Nice work.</p>
+      <div class="result-stats" id="resultStats">
+        <div><strong id="resultHitValue">0/0</strong><span>notes hit</span></div>
+        <div><strong id="resultAccuracyValue">0%</strong><span>input accuracy</span></div>
+        <div><strong id="resultStreakValue">0</strong><span>best streak</span></div>
+      </div>
+      <p class="result-mistakes" id="resultMistakes"></p>
+      <div class="result-recommendation" id="resultRecommendation" hidden>
+        <span class="result-recommendation-label">Recommended next</span>
+        <button type="button" class="result-recommended-song" id="resultRecommendedBtn"></button>
+      </div>
+      <div class="result-actions">
+        <button type="button" class="soft-btn" id="resultReplayBtn">Play again</button>
+        <button type="button" class="primary-btn" id="practiceMistakesBtn">Practice mistakes</button>
+        <button type="button" class="soft-btn" id="resultNextBtn">Next in list</button>
+      </div>
+      <button type="button" class="result-close" data-close-dialog="resultDialog" aria-label="Close results">×</button>
+    </div>
+  </dialog>
+
+  <div class="colour-popover" id="colourPopover" popover="manual" role="dialog" aria-label="Choose a tongue color"></div>
+
+  <div class="toast" id="toast" popover="manual" role="alert" aria-live="assertive"></div>
+
+  <aside class="catalog-update-banner" id="catalogUpdateBanner" role="status" aria-live="polite" hidden>
+    <p><strong>Song catalogue was updated.</strong> Would you like to refresh the app?</p>
+    <div>
+      <button type="button" class="text-tool-btn" id="catalogUpdateLaterBtn">Later</button>
+      <button type="button" class="primary-btn compact" id="catalogUpdateRefreshBtn">Refresh app</button>
+    </div>
+  </aside>
+
+  <div class="tour-overlay" id="tourOverlay" hidden>
+    <div class="tour-focus-ring" id="tourFocusRing" aria-hidden="true"></div>
+    <section class="tour-card" id="tourCard" role="dialog" aria-modal="true" aria-labelledby="tourTitle" aria-describedby="tourText">
+      <div class="tour-card-head">
+        <span id="tourProgress">1 of 5</span>
+        <button type="button" class="tour-skip-btn" id="tourSkipBtn">Skip</button>
+      </div>
+      <h2 id="tourTitle">Welcome</h2>
+      <p id="tourText"></p>
+      <div class="tour-actions">
+        <label class="tour-preference">
+          <input type="checkbox" id="tourDontShowAgain" />
+          <span class="tour-checkbox" aria-hidden="true"></span>
+          <span>Don't show again</span>
+        </label>
+        <div class="tour-nav-actions">
+          <button type="button" class="soft-btn compact" id="tourBackBtn">Back</button>
+          <button type="button" class="primary-btn compact" id="tourNextBtn">Next</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="print-sheet" id="printSheet" aria-hidden="true"></div>
+
+  <script src="app-files/demo-catalog.js"></script>
+  <script src="app-files/community-upload-config.js"></script>
+  <script src="app-files/app.js"></script>
+</body>
+</html>

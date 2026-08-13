@@ -1,0 +1,10 @@
+{
+  "format": "ethereal-drum-song-v3",
+  "song": {
+    "title": "Note Scale Practice",
+    "bpm": 72,
+    "sequence": "1 2 3 5 | 6 1̇ 6 5 | 3 2 1 -",
+    "scaleType": "major-pentatonic",
+    "folder": "demo"
+  }
+}
