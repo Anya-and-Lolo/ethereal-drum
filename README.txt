@@ -78,12 +78,15 @@ unless you deliberately prepare and send them for Community gallery review.
 Imported .drumsong files are private too. They are not automatically uploaded
 to the owner or shared with other visitors.
 
-My songs uses the browser's local storage, not cookies. It normally survives
-closing and reopening the website on the same browser and device, but it is not
-a permanent backup. Clearing site data, using private browsing, changing
-browsers, or changing devices can remove the private library. Export important
-songs as .drumsong files. My Drum also lets you export a .drumsettings backup
-of your instrument mapping and import it again later.
+Song library uses browser local storage, not cookies. Songs normally remain
+after closing the browser, but clearing site data or changing devices can remove
+them. It's a good idea to export important songs as backups on cloud or local
+drive.
+
+Private browsing or changing browsers can also create a separate private
+library. Exported song backups use the .drumsong format. My Drum also lets you
+export a .drumsettings backup of your instrument mapping and import it again
+later.
 
 Cloud syncing is intentionally not automatic. A safe cross-device cloud library
 would require accounts, authentication, and a protected database so visitors

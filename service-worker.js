@@ -1,4 +1,4 @@
-const CACHE = 'ethereal-drum-trainer-v71-desktop-type-polish';
+const CACHE = 'ethereal-drum-trainer-v72-switch-layer-readme';
 const SHELL = [
   './',
   './index.html',

@@ -2091,7 +2091,7 @@
     let activeIndices;
     if (state.visualMode === 'radial') {
       if (back) renderRadialBackdrop(back, width, height, now, delta);
-      activeIndices = state.mode === 'tuner' ? new Set() : renderRadialFrame(ctx, width, height, back);
+      activeIndices = state.mode === 'tuner' ? new Set() : renderRadialFrame(ctx, width, height);
     } else {
       activeIndices = state.mode === 'tuner' ? new Set() : renderLaneFrame(ctx, width, height);
     }
@@ -2167,15 +2167,6 @@
       drumSize: body.offsetWidth
     };
     return state.companionGeometryCache;
-  }
-
-  function pointInsideCompanionZone(x, y, inset = 0) {
-    const geometry = companionGeometry();
-    if (!geometry) return false;
-    return x >= geometry.zoneX + inset
-      && x <= geometry.zoneX + geometry.zoneWidth - inset
-      && y >= geometry.zoneY + inset
-      && y <= geometry.zoneY + geometry.zoneHeight - inset;
   }
 
   function companionGuideStrengths(previewSeconds) {
@@ -2664,7 +2655,7 @@
     ctx.restore();
   }
 
-  function renderRadialFrame(ctx, width, height, underCtx = null) {
+  function renderRadialFrame(ctx, width, height) {
     const previewSeconds = 4.2 / state.speed;
     const { drumSize, scale, cx, cy } = radialGeometry(width, height);
     const compactNotes = width <= 760 || window.matchMedia?.('(pointer: coarse)').matches;
@@ -2726,9 +2717,10 @@
         impactY = cy + target.dy * targetRadius;
       }
 
-      const underCompanion = !target.high && Boolean(underCtx) && pointInsideCompanionZone(x, y, 6);
-      const drawCtx = underCompanion && underCtx ? underCtx : ctx;
-      const depthAlpha = underCompanion ? 0.42 : 1;
+      // Flying notes always stay on the foreground canvas. Sending a main note to the
+      // backdrop when it crossed the companion area also placed it behind the main drum.
+      const drawCtx = ctx;
+      const depthAlpha = 1;
 
       // Companion animation is clipped to its own panel. It can no longer spill over the
       // main drum, toolbar or neighbouring companion meridians.

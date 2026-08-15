@@ -2391,3 +2391,12 @@ input[type="range"] { width:100%; accent-color:var(--accent); }
 @media (max-width:1180px) {
   .timing-range-btn { order:2; }
 }
+
+/* v72: these are parallel Song Builder controls and must share one label style. */
+.compose-actions .note-names-switch .compact-switch-label,
+.sequence-label-tools .expressive-timing-switch .compact-switch-label {
+  display:inline !important;
+  font-size:15px;
+  font-weight:700;
+  line-height:1.2;
+}
