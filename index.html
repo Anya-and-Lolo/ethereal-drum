@@ -66,6 +66,16 @@
           <button class="icon-btn help-tour-btn" id="helpTourBtn" type="button" aria-label="Open app walkthrough" title="Help and walkthrough">?</button>
           <button class="soft-btn compact" id="editBtn">Edit song</button>
           <button class="soft-btn compact" id="settingsBtn">My Drum</button>
+          <button class="icon-btn mobile-view-toggle" id="mobileViewToggleBtn" type="button" data-view="radial" aria-label="Switch display to Falling lanes" title="Switch to Falling lanes">
+            <svg class="view-mode-icon view-mode-icon-drum" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="1.8"></circle>
+              <path d="M12 3v6M9.5 6.5 12 9l2.5-2.5M12 21v-6M9.5 17.5 12 15l2.5 2.5M3 12h6M6.5 9.5 9 12l-2.5 2.5M21 12h-6M17.5 9.5 15 12l2.5 2.5"></path>
+            </svg>
+            <svg class="view-mode-icon view-mode-icon-lanes" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 4v15M4.5 16.5 7 19l2.5-2.5M17 20V5M14.5 7.5 17 5l2.5 2.5"></path>
+              <path class="lane-guide" d="M2.5 4v16M12 3v18M21.5 4v16"></path>
+            </svg>
+          </button>
         </div>
       </header>
 
@@ -105,6 +115,11 @@
             <div class="stage-overlay top-left">
               <span id="totalNotesLabel">0 notes total</span>
               <span id="tempoLabel">72 BPM</span>
+              <div class="mobile-stage-stats" aria-label="Current practice statistics">
+                <span class="stat-pill mobile-stage-pill" id="mobileScorePill" data-tone="neutral"><b id="mobileScoreValue">0%</b> Score</span>
+                <span class="stat-pill mobile-stage-pill" id="mobileStreakPill" data-tone="neutral"><b id="mobileStreakValue">0</b> Streak</span>
+                <span class="stat-pill mobile-stage-pill" data-tone="notes"><b id="mobileNotesLeftValue">0</b> Notes left</span>
+              </div>
             </div>
             <div class="tuner-panel" id="tunerPanel" hidden aria-live="polite">
               <div class="tuner-reading">
@@ -227,8 +242,8 @@
       </div>
 
       <div class="form-grid song-options-grid">
-        <label><span class="field-label-row"><span>Song title</span><span class="label-hint">use (brackets) to group songs</span></span><input id="songTitleInput" required maxlength="80" placeholder="Arirang (Asian Folk Songs)" /></label>
-        <label>Tempo speed (BPM)<select id="songBpmInput" required>
+        <label class="song-title-option"><span class="field-label-row"><span>Song title</span><span class="label-hint">use (brackets) to group songs</span></span><input id="songTitleInput" required maxlength="80" placeholder="Arirang (Asian Folk Songs)" /></label>
+        <label class="song-tempo-option">Tempo speed (BPM)<select id="songBpmInput" required>
           <option value="30">30 BPM (Very slow)</option>
           <option value="60">60 BPM (Very slow)</option>
           <option value="80">80 BPM (Slow)</option>
@@ -240,16 +255,13 @@
           <option value="172">172 BPM (Very fast)</option>
           <option value="240">240 BPM (Very fast)</option>
         </select></label>
-        <label>Song folder<select id="songFolderSelect">
-          <option value="library" selected>Song library</option>
-          <option value="demo">Demo songs</option>
-        </select></label>
-        <label>Song scale<select id="songScaleSelect">
+        <label class="song-scale-option">Song scale<select id="songScaleSelect">
           <option value="major">Major</option>
           <option value="major-pentatonic">Major pentatonic</option>
           <option value="minor-pentatonic">Minor pentatonic</option>
           <option value="any">Any tuning, position based</option>
         </select></label>
+        <p class="song-storage-notice" id="songStorageNotice">Songs are saved privately in this browser and device. Export important songs as .drumsong backups.</p>
       </div>
 
       <div class="live-compose">
@@ -315,7 +327,8 @@
                 <h3>Music sheet (Jianpu)</h3>
                 <p id="selectedTimingLabel">Click a number. Underlines make notes quicker; extension dashes make them longer.</p>
               </div>
-              <div class="timing-choices" id="timingChoiceGroup" aria-label="Timing choices">
+              <div class="timing-choices" id="timingChoiceGroup" aria-label="Rhythm choices">
+                <button type="button" class="timing-range-btn" id="timingRangeBtn" aria-pressed="false" disabled>↔ Select range</button>
                 <button type="button" data-duration="0.25" title="Sixteenth note: four notes fit into one regular beat" disabled>Very quick</button>
                 <button type="button" data-duration="0.5" title="Eighth note: two notes fit into one regular beat" disabled>Quick</button>
                 <button type="button" data-duration="1" title="Quarter note: one note fills one regular beat" disabled>Regular</button>

@@ -61,7 +61,10 @@ THE THREE SONG COLLECTIONS
 
 Demo songs
 These are selected and maintained by the app owner. Only approved files placed
-in demo-songs become global demos.
+in demo-songs become global demos. Song Builder always saves into the private
+Song library and does not include a folder selector. To publish an owner-curated
+demo, export its .drumsong file, place it in demo-songs, then start the trainer
+locally to rebuild the catalogue or commit it so the online workflow rebuilds it.
 
 Community gallery
 These are separately reviewed community submissions. Anyone can browse and
@@ -75,10 +78,17 @@ unless you deliberately prepare and send them for Community gallery review.
 Imported .drumsong files are private too. They are not automatically uploaded
 to the owner or shared with other visitors.
 
-Browser storage is not a permanent backup. Clearing site data, changing
+My songs uses the browser's local storage, not cookies. It normally survives
+closing and reopening the website on the same browser and device, but it is not
+a permanent backup. Clearing site data, using private browsing, changing
 browsers, or changing devices can remove the private library. Export important
 songs as .drumsong files. My Drum also lets you export a .drumsettings backup
 of your instrument mapping and import it again later.
+
+Cloud syncing is intentionally not automatic. A safe cross-device cloud library
+would require accounts, authentication, and a protected database so visitors
+cannot read or overwrite one another's songs. The current private browser
+library plus portable .drumsong backups keeps the public app account-free.
 
 
 SUBMITTING TO THE COMMUNITY GALLERY
@@ -93,8 +103,9 @@ To submit:
    submitted again from the same browser; editing the title, notes, BPM, or
    scale makes the revised version eligible for submission.
 5. The song is saved in the owner's private Google Drive review folder.
-6. The owner reviews it and places approved files in community-songs, then
-   runs the starter to rebuild the catalogue.
+6. The owner reviews it and places approved files in community-songs. A local
+   starter rebuilds the catalogue automatically; on GitHub Pages, commit the file
+   and the included song-catalog workflow rebuilds and republishes the catalogue.
 
 This submission method does not require an app account. Submissions never
 enter the public gallery automatically.
@@ -149,21 +160,36 @@ version, while the app displays Song under review after a successful submit.
 ONLINE / GITHUB PAGES VERSION
 
 Online visitors do not use any starter file. The website loads owner-approved
-Demo songs and Community gallery songs while keeping each visitor's Song
-library private in their own browser.
+Demo songs and Community gallery songs while keeping each visitor's My songs
+collection private in their own browser.
 
-For GitHub Pages, this package includes:
+Keep GitHub Pages configured permanently as:
+  Settings > Pages > Source: Deploy from a branch
+  Branch: main
+  Folder: /(root)
+
+Do NOT switch Pages Source to GitHub Actions.
+
+This package includes:
 - scripts/build-song-catalog.py
-- .github/workflows/pages.yml
+- .github/workflows/song-catalog.yml
 
-After the repository's Pages source is set to GitHub Actions once, every push to
-main rebuilds app-files/demo-catalog.js from demo-songs and community-songs and
-then deploys the complete site. This means the owner can add, replace, move, or
-delete .drumsong files in those folders and push the changes without manually
-rebuilding the catalogue first.
+When you add, remove, replace, or move a .drumsong file inside demo-songs or
+community-songs and commit it to the default branch, the workflow will:
+1. regenerate app-files/demo-catalog.js
+2. commit that generated catalog to the default branch
+3. explicitly request a GitHub Pages rebuild from the latest branch revision
+
+The explicit rebuild is important because GitHub does not automatically run a
+branch-based Pages build for commits created with a workflow GITHUB_TOKEN.
+
+If the workflow reports that it cannot push, check:
+  Settings > Actions > General > Workflow permissions
+and allow Read and write permissions, unless a repository/organization policy
+prevents it.
 
 The online service worker is network-first for app files and the public song
-catalogue. The open app also polls the catalogue with a cache-busting URL, so
+catalogue. The open app also checks the catalogue with a cache-busting URL, so
 newly deployed Demo/Community songs can appear in an already-open tab without
 asking visitors to clear cookies or site data. App-code updates activate the new
 service worker immediately and refresh an existing controlled page once.

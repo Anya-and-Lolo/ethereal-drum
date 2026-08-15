@@ -16,6 +16,7 @@
   const COMMUNITY_UPLOAD_URL = String(window.ETHEREAL_COMMUNITY_UPLOAD_URL || '').trim();
   const COMMUNITY_STATUS_CALLBACK = 'etherealCommunityUploadStatus';
   const NOTE_COLORS = ['#a78bfa', '#5eead4', '#fbbf24', '#fb7185', '#60a5fa', '#f472b6', '#34d399', '#f97316', '#c084fc', '#22d3ee', '#eab308', '#a3e635', '#fda4af', '#67e8f9', '#bef264'];
+
   const SCALE_INTERVALS = {
     major: [0, 2, 4, 5, 7, 9, 11],
     'major-pentatonic': [0, 2, 4, 7, 9],
@@ -616,6 +617,7 @@
     sectionLoop: false,
     animationId: 0,
     audioContext: null,
+    masterGain: null,
     lastScheduledIndex: -1,
     lastMetronomeBeat: -1,
     score: 0,
@@ -636,6 +638,7 @@
     editorTimeline: [],
     editorTimingSelectionIndex: -1,
     editorTimingSelection: [],
+    editorRangeSelectArmed: false,
     draftSaveTimer: 0,
     expressiveTimingEnabled: false,
     showPitchNames: false,
@@ -646,7 +649,12 @@
     stars: [],
     ambientId: 0,
     lastFrameAt: 0,
+    lastVisualAt: 0,
     lastAmbientAt: 0,
+    particlePhaseCache: new Map(),
+    stageTonguePads: [],
+    companionGeometryCache: null,
+    companionGuideGeometryKey: '',
     micEnabled: false,
     micStream: null,
     micSource: null,
@@ -664,16 +672,16 @@
   const els = {
     sidebar: $('sidebar'), sidebarClose: $('sidebarClose'), sidebarScrim: $('sidebarScrim'), menuBtn: $('menuBtn'), songList: $('songList'), songSearch: $('songSearch'),
     newSongBtn: $('newSongBtn'), importBtn: $('importBtn'), importFile: $('importFile'), libraryBtn: $('libraryBtn'), libraryCountBadge: $('libraryCountBadge'), exportBtn: $('exportBtn'), deleteBtn: $('deleteBtn'), restoreDemosBtn: $('restoreDemosBtn'),
-    currentTitle: $('currentTitle'), currentCollection: $('currentCollection'), currentDifficulty: $('currentDifficulty'), editBtn: $('editBtn'), settingsBtn: $('settingsBtn'), helpTourBtn: $('helpTourBtn'), instrumentTitle: $('instrumentTitle'),
+    currentTitle: $('currentTitle'), currentCollection: $('currentCollection'), currentDifficulty: $('currentDifficulty'), editBtn: $('editBtn'), settingsBtn: $('settingsBtn'), helpTourBtn: $('helpTourBtn'), mobileViewToggleBtn: $('mobileViewToggleBtn'), instrumentTitle: $('instrumentTitle'),
     noteCanvas: $('noteCanvas'), noteCanvasBack: $('noteCanvasBack'), noteStage: $('noteStage'), playBtn: $('playBtn'), loopBtn: $('loopBtn'), metronomeBtn: $('metronomeBtn'), focusModeBtn: $('focusModeBtn'),
     progress: $('progress'), elapsedLabel: $('elapsedLabel'), durationLabel: $('durationLabel'), speedSelect: $('speedSelect'), countInToggle: $('countInToggle'),
     setABtn: $('setABtn'), setBBtn: $('setBBtn'), abLoopBtn: $('abLoopBtn'), clearABBtn: $('clearABBtn'), abLoopStatus: $('abLoopStatus'), abMarkerA: $('abMarkerA'), abMarkerB: $('abMarkerB'),
-    totalNotesLabel: $('totalNotesLabel'), tempoLabel: $('tempoLabel'), countIn: $('countIn'), scorePill: $('scorePill'), scoreValue: $('scoreValue'), streakPill: $('streakPill'), streakValue: $('streakValue'), notesLeftValue: $('notesLeftValue'), modeHint: $('modeHint'),
+    totalNotesLabel: $('totalNotesLabel'), tempoLabel: $('tempoLabel'), countIn: $('countIn'), scorePill: $('scorePill'), scoreValue: $('scoreValue'), streakPill: $('streakPill'), streakValue: $('streakValue'), notesLeftValue: $('notesLeftValue'), mobileScorePill: $('mobileScorePill'), mobileScoreValue: $('mobileScoreValue'), mobileStreakPill: $('mobileStreakPill'), mobileStreakValue: $('mobileStreakValue'), mobileNotesLeftValue: $('mobileNotesLeftValue'), modeHint: $('modeHint'),
     trainerGrid: $('trainerGrid'), practiceCard: $('practiceCard'), drumWrap: $('drumWrap'), stageDrumWrap: $('stageDrumWrap'), highDrumWrap: $('highDrumWrap'), keyboardHint: $('keyboardHint'), nextNoteValue: $('nextNoteValue'), nextNoteTime: $('nextNoteTime'),
     editorDialog: $('editorDialog'), editorForm: $('editorForm'), editorHeading: $('editorHeading'), songTitleInput: $('songTitleInput'), songBpmInput: $('songBpmInput'),
     sequenceInput: $('sequenceInput'), sequenceBackdrop: $('sequenceBackdrop'), copySequenceBtn: $('copySequenceBtn'), exportSheetBtn: $('exportSheetBtn'),
     printSheet: $('printSheet'),
-    draftNotice: $('draftNotice'), draftNoticeText: $('draftNoticeText'), discardDraftBtn: $('discardDraftBtn'), songFolderSelect: $('songFolderSelect'), songScaleSelect: $('songScaleSelect'), miniPads: $('miniPads'), expressiveTimingToggle: $('expressiveTimingToggle'), timingEditor: $('timingEditor'), timingTokenStrip: $('timingTokenStrip'), timingChoiceGroup: $('timingChoiceGroup'), selectedTimingLabel: $('selectedTimingLabel'), appendChordBtn: $('appendChordBtn'), appendRestBtn: $('appendRestBtn'), appendBarBtn: $('appendBarBtn'), clearSequenceBtn: $('clearSequenceBtn'), showPitchNamesToggle: $('showPitchNamesToggle'), saveSongBtn: $('saveSongBtn'), deleteEditorBtn: $('deleteEditorBtn'), editorGuideBtn: $('editorGuideBtn'), songGuideDialog: $('songGuideDialog'), songGuideContent: $('songGuideContent'), communityDialog: $('communityDialog'), communitySelection: $('communitySelection'), submitCommunityBtn: $('submitCommunityBtn'), communityUploadProgress: $('communityUploadProgress'), communityUploadStatus: $('communityUploadStatus'), communityUploadPercent: $('communityUploadPercent'), communityProgressTrack: $('communityProgressTrack'), communityProgressFill: $('communityProgressFill'),
+    draftNotice: $('draftNotice'), draftNoticeText: $('draftNoticeText'), discardDraftBtn: $('discardDraftBtn'), songScaleSelect: $('songScaleSelect'), miniPads: $('miniPads'), expressiveTimingToggle: $('expressiveTimingToggle'), timingEditor: $('timingEditor'), timingTokenStrip: $('timingTokenStrip'), timingChoiceGroup: $('timingChoiceGroup'), timingRangeBtn: $('timingRangeBtn'), selectedTimingLabel: $('selectedTimingLabel'), appendChordBtn: $('appendChordBtn'), appendRestBtn: $('appendRestBtn'), appendBarBtn: $('appendBarBtn'), clearSequenceBtn: $('clearSequenceBtn'), showPitchNamesToggle: $('showPitchNamesToggle'), saveSongBtn: $('saveSongBtn'), deleteEditorBtn: $('deleteEditorBtn'), editorGuideBtn: $('editorGuideBtn'), songGuideDialog: $('songGuideDialog'), songGuideContent: $('songGuideContent'), communityDialog: $('communityDialog'), communitySelection: $('communitySelection'), submitCommunityBtn: $('submitCommunityBtn'), communityUploadProgress: $('communityUploadProgress'), communityUploadStatus: $('communityUploadStatus'), communityUploadPercent: $('communityUploadPercent'), communityProgressTrack: $('communityProgressTrack'), communityProgressFill: $('communityProgressFill'),
     songLibraryDialog: $('songLibraryDialog'), libraryTabAll: $('libraryTabAll'), libraryTabEasy: $('libraryTabEasy'), libraryTabMedium: $('libraryTabMedium'), libraryTabHard: $('libraryTabHard'), libraryTabExpert: $('libraryTabExpert'), librarySearch: $('librarySearch'), libraryGrid: $('libraryGrid'), libraryEmpty: $('libraryEmpty'), libraryCommunityBanner: $('libraryCommunityBanner'), libraryCommunityInfoBtn: $('libraryCommunityInfoBtn'), communitySongsCount: $('communitySongsCount'), communityEasyCount: $('communityEasyCount'), communityMediumCount: $('communityMediumCount'), communityHardCount: $('communityHardCount'), communityExpertCount: $('communityExpertCount'),
     myDrumDialog: $('myDrumDialog'), myDrumTitle: $('myDrumTitle'), myDrumBadges: $('myDrumBadges'), myDrumPreview: $('myDrumPreview'), myDrumNoteCount: $('myDrumNoteCount'), myDrumNoteList: $('myDrumNoteList'), myDrumCompanion: $('myDrumCompanion'), myDrumCompanionPreview: $('myDrumCompanionPreview'), exportInstrumentBtn: $('exportInstrumentBtn'), exportInstrumentFromSettingsBtn: $('exportInstrumentFromSettingsBtn'), importInstrumentBtn: $('importInstrumentBtn'), importInstrumentFile: $('importInstrumentFile'), editInstrumentBtn: $('editInstrumentBtn'),
     settingsDialog: $('settingsDialog'), settingsForm: $('settingsForm'), instrumentKeySelect: $('instrumentKeySelect'), scaleTypeSelect: $('scaleTypeSelect'), noteCountSelect: $('noteCountSelect'), rootOctaveSelect: $('rootOctaveSelect'), highDrumOption: $('highDrumOption'), highDrumAvailability: $('highDrumAvailability'), highDrumToggle: $('highDrumToggle'), highDrumAlwaysToggle: $('highDrumAlwaysToggle'), companionTuningSection: $('companionTuningSection'), companionTuningGrid: $('companionTuningGrid'), colourPopover: $('colourPopover'), pitchInfoBtn: $('pitchInfoBtn'), pitchInfo: $('pitchInfo'), noteGuideBody: $('noteGuideBody'), noteGuideOctave: $('noteGuideOctave'), tuningGrid: $('tuningGrid'), saveSettingsBtn: $('saveSettingsBtn'),
@@ -790,7 +798,7 @@
       : fallbackScale;
     const folder = song?.folder === 'community'
       ? 'community'
-      : song?.builtIn || song?.folder === 'demo'
+      : song?.builtIn
         ? 'demo'
         : 'library';
     return { ...song, scaleType, folder };
@@ -1029,7 +1037,7 @@
         if (canJoinRight && nextBeams >= 1) classes.push('join-l1-right');
         if (beams >= 2 && canJoinLeft && previousBeams >= 2) classes.push('join-l2-left');
         if (beams >= 2 && canJoinRight && nextBeams >= 2) classes.push('join-l2-right');
-        html += `<span class="${classes.join(' ')}"${beams ? ` data-beams="${beams}"` : ''}>`;
+        html += `<span class="${classes.join(' ')}" data-sequence-start="${i}" data-sequence-end="${tokenEnd}"${beams ? ` data-beams="${beams}"` : ''}>`;
         inToken = true;
         previousTokenEnd = tokenEnd;
       }
@@ -1055,6 +1063,72 @@
     els.sequenceBackdrop.innerHTML = `${html}\n`;
     els.sequenceBackdrop.scrollTop = els.sequenceInput.scrollTop;
     els.sequenceBackdrop.scrollLeft = els.sequenceInput.scrollLeft;
+  }
+
+  // The visible Jianpu layer and the native textarea can wrap a few pixels apart on
+  // mobile browsers. Map a tap against the visible tokens so the caret lands where the
+  // person tapped, including directly after the final note.
+  function placeSequenceCaretFromBackdropPoint(event) {
+    if (!window.matchMedia?.('(pointer: coarse)').matches) return;
+    if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return;
+    if (event.clientX === 0 && event.clientY === 0) return;
+    const input = els.sequenceInput;
+    const tokens = Array.from(els.sequenceBackdrop?.querySelectorAll('.seq-token[data-sequence-start]') || [])
+      .map(element => ({
+        element,
+        start: Number(element.dataset.sequenceStart),
+        end: Number(element.dataset.sequenceEnd),
+        rect: element.getBoundingClientRect()
+      }))
+      .filter(token => Number.isFinite(token.start) && Number.isFinite(token.end) && token.rect.width > 0);
+    if (!tokens.length) return;
+
+    const lineHeight = Number.parseFloat(getComputedStyle(input).lineHeight) || 48;
+    const firstTop = Math.min(...tokens.map(token => token.rect.top));
+    const lastBottom = Math.max(...tokens.map(token => token.rect.bottom));
+    let caret = null;
+    if (event.clientY < firstTop - lineHeight * .35) caret = 0;
+    if (event.clientY > lastBottom + lineHeight * .35) caret = input.value.length;
+
+    if (caret === null) {
+      const closest = tokens.reduce((best, token) => {
+        const distance = Math.abs(event.clientY - (token.rect.top + token.rect.height / 2));
+        return !best || distance < best.distance ? { token, distance } : best;
+      }, null);
+      const lineCentre = closest.token.rect.top + closest.token.rect.height / 2;
+      const lineTokens = tokens
+        .filter(token => Math.abs((token.rect.top + token.rect.height / 2) - lineCentre) < lineHeight * .42)
+        .sort((left, right) => left.rect.left - right.rect.left);
+      const first = lineTokens[0];
+      const last = lineTokens[lineTokens.length - 1];
+      if (event.clientX <= first.rect.left) {
+        caret = first.start;
+      } else if (event.clientX >= last.rect.right) {
+        caret = last.end;
+      } else {
+        for (let index = 0; index < lineTokens.length; index += 1) {
+          const token = lineTokens[index];
+          if (event.clientX <= token.rect.right) {
+            caret = event.clientX < token.rect.left + token.rect.width / 2 ? token.start : token.end;
+            break;
+          }
+          const next = lineTokens[index + 1];
+          if (next && event.clientX < next.rect.left) {
+            caret = event.clientX < (token.rect.right + next.rect.left) / 2 ? token.end : next.start;
+            break;
+          }
+        }
+      }
+    }
+
+    if (caret === null) return;
+    const placeCaret = () => {
+      input.setSelectionRange(caret, caret);
+      state.editorSelectionStart = caret;
+      state.editorSelectionEnd = caret;
+    };
+    placeCaret();
+    requestAnimationFrame(placeCaret);
   }
 
   function createJianpuDigit(label, className = 'jianpu-digit') {
@@ -1119,6 +1193,7 @@
   function clearTimingSelection() {
     state.editorTimingSelection = [];
     state.editorTimingSelectionIndex = -1;
+    state.editorRangeSelectArmed = false;
   }
 
   // Builds the numbered sheet into any container. The print path uses this too, so a
@@ -1272,16 +1347,25 @@
         && chosen.every(item => timingWord(item.durationBeats) === word));
       button.setAttribute('aria-pressed', String(button.classList.contains('active')));
     });
+    if (els.timingRangeBtn) {
+      const hasAnchor = state.editorTimingSelectionIndex >= 0;
+      els.timingRangeBtn.disabled = !hasAnchor;
+      els.timingRangeBtn.classList.toggle('active', Boolean(state.editorRangeSelectArmed));
+      els.timingRangeBtn.setAttribute('aria-pressed', String(Boolean(state.editorRangeSelectArmed)));
+      els.timingRangeBtn.textContent = state.editorRangeSelectArmed ? 'Tap last note' : '↔ Select range';
+    }
     if (chosen.length > 1) {
       const words = new Set(chosen.map(item => timingWord(item.durationBeats).toLowerCase()));
       els.selectedTimingLabel.textContent = words.size === 1
-        ? `${chosen.length} notes selected, all ${[...words][0]}. Pick a timing to change them together.`
-        : `${chosen.length} notes selected. Pick a timing to apply it to all of them.`;
+        ? `${chosen.length} notes selected, all ${[...words][0]}. Pick a rhythm to change them together.`
+        : `${chosen.length} notes selected. Pick a rhythm to apply it to all of them.`;
     } else if (chosen.length === 1) {
       const only = chosen[0];
-      els.selectedTimingLabel.textContent = `${isRestCore(only.core) ? 'Rest' : `Note ${only.core}`} is ${timingWord(only.durationBeats).toLowerCase()}: ${timingDescription(only.durationBeats)}. Shift-click another note to select a run.`;
+      els.selectedTimingLabel.textContent = state.editorRangeSelectArmed
+        ? `Now tap the last note in the range. Everything between the two notes will be selected.`
+        : `${isRestCore(only.core) ? 'Rest' : `Note ${only.core}`} is ${timingWord(only.durationBeats).toLowerCase()}: ${timingDescription(only.durationBeats)}. Tap Select range, then tap the last note. On desktop, Shift-click also works.`;
     } else {
-      els.selectedTimingLabel.textContent = 'Click a number, then shift-click another to select everything between them. One underline means quick; two mean very quick.';
+      els.selectedTimingLabel.textContent = 'Tap a number to select it. To select several notes on mobile, tap the first note, choose Select range, then tap the last note. One underline means quick; two mean very quick.';
     }
   }
 
@@ -1816,6 +1900,13 @@
     createDrum(els.drumWrap, false);
     createDrum(els.stageDrumWrap, true);
     renderHighDrum();
+    state.stageTonguePads = [
+      ...els.stageDrumWrap.querySelectorAll('.tongue'),
+      ...els.highDrumWrap.querySelectorAll('.tongue')
+    ];
+    state.companionGeometryCache = null;
+    state.companionGuideGeometryKey = '';
+    state.particlePhaseCache.clear();
     if (els.keyboardHint) {
       els.keyboardHint.textContent = highDrumEnabled()
         ? 'Keys 1-9, 0, Q-P'
@@ -1876,14 +1967,15 @@
         cluster.appendChild(label);
         const pads = document.createElement('div');
         pads.className = 'mini-pad-pads';
+        pads.style.setProperty('--mini-pad-count', String(items.length));
         items.forEach(item => pads.appendChild(makeMiniPad(item.note, item.index)));
         cluster.appendChild(pads);
         row.appendChild(cluster);
       });
       els.miniPads.appendChild(row);
     };
-    addRow([{ items: middle, caption: 'Middle' }]);
-    addRow([{ items: high, caption: 'High' }, { items: low, caption: 'Low' }]);
+    addRow([{ items: middle, caption: 'Middle notes' }, { items: high, caption: 'High notes' }]);
+    addRow([{ items: low, caption: 'Low notes' }]);
   }
 
   function updatePracticeUI() {
@@ -1892,7 +1984,9 @@
     if (state.mode === 'wait') {
       next = state.parsedNotes[state.waitingIndex];
     } else {
-      next = state.parsedNotes.find(n => n.time >= current - 0.06 && !state.hitNotes.has(n.id));
+      let nextIndex = noteIndexAtOrAfter(current - 0.06);
+      while (nextIndex < state.parsedNotes.length && state.hitNotes.has(state.parsedNotes[nextIndex].id)) nextIndex += 1;
+      next = state.parsedNotes[nextIndex];
     }
     if (next) {
       els.nextNoteValue.textContent = next.label;
@@ -1902,37 +1996,53 @@
       els.nextNoteValue.textContent = '✓';
       els.nextNoteTime.textContent = state.playing ? 'Finishing' : 'Complete';
     }
+    const firstFutureIndex = noteIndexAtOrAfter(current - 0.06);
+    const sectionEndIndex = state.sectionLoop && Number.isFinite(state.loopB)
+      ? noteIndexAtOrAfter(state.loopB + 0.02)
+      : state.parsedNotes.length;
     const notesLeft = state.mode === 'wait'
       ? Math.max(0, state.parsedNotes.length - state.waitingIndex)
-      : state.parsedNotes.filter(note => note.time >= current - 0.06
-        && (!state.sectionLoop || !Number.isFinite(state.loopB) || note.time < state.loopB + 0.02)).length;
+      : Math.max(0, sectionEndIndex - firstFutureIndex);
     const totalNotes = state.parsedNotes.length;
     els.totalNotesLabel.textContent = `${totalNotes} ${totalNotes === 1 ? 'note' : 'notes'} total`;
     els.notesLeftValue.textContent = String(notesLeft);
+    if (els.mobileNotesLeftValue) els.mobileNotesLeftValue.textContent = String(notesLeft);
     els.elapsedLabel.textContent = formatTime(current);
     els.progress.value = state.duration ? Math.round((current / state.duration) * 1000) : 0;
     const scorePercent = state.attempts ? Math.round((state.score / state.attempts) * 100) : 0;
     els.scoreValue.textContent = `${scorePercent}%`;
     els.streakValue.textContent = String(state.streak);
-    els.scorePill.dataset.tone = !state.attempts || scorePercent === 0
+    if (els.mobileScoreValue) els.mobileScoreValue.textContent = `${scorePercent}%`;
+    if (els.mobileStreakValue) els.mobileStreakValue.textContent = String(state.streak);
+    const scoreTone = !state.attempts || scorePercent === 0
       ? 'neutral'
       : scorePercent >= 80
         ? 'success'
         : scorePercent >= 40
           ? 'warning'
           : 'danger';
-    els.streakPill.dataset.tone = state.streak === 0 ? 'neutral' : state.streak >= 3 ? 'success' : 'building';
+    const streakTone = state.streak === 0 ? 'neutral' : state.streak >= 3 ? 'success' : 'building';
+    els.scorePill.dataset.tone = scoreTone;
+    els.streakPill.dataset.tone = streakTone;
+    if (els.mobileScorePill) els.mobileScorePill.dataset.tone = scoreTone;
+    if (els.mobileStreakPill) els.mobileStreakPill.dataset.tone = streakTone;
   }
 
   function resizeCanvas() {
     const rect = els.noteCanvas.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // Two animated canvases at DPR 2 are expensive on phones/tablets. A 1.5 cap keeps
+    // the same CSS size and appearance while cutting the number of painted pixels by
+    // roughly 44%. Desktop remains at DPR 2.
+    const compactCanvas = rect.width <= 1100 || window.matchMedia?.('(pointer: coarse)').matches;
+    const dpr = Math.min(window.devicePixelRatio || 1, compactCanvas ? 1.5 : 2);
     [els.noteCanvas, els.noteCanvasBack].forEach(canvas => {
       if (!canvas) return;
       canvas.width = Math.max(1, Math.round(rect.width * dpr));
       canvas.height = Math.max(1, Math.round(rect.height * dpr));
       canvas.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
     });
+    state.companionGeometryCache = null;
+    state.companionGuideGeometryKey = '';
     buildStarField(rect.width, rect.height);
     renderFrame();
   }
@@ -1941,6 +2051,26 @@
   // highlight and no note parked on top of a tongue hiding its label.
   function playbackStarted() {
     return state.playing || state.countInActive || state.currentTime > 0.001;
+  }
+
+  // parsedNotes is time-sorted. Binary-searching the visible time window means long songs
+  // no longer scan every hidden note several times per animation frame.
+  function noteIndexAtOrAfter(time) {
+    let low = 0;
+    let high = state.parsedNotes.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (state.parsedNotes[mid].time < time) low = mid + 1;
+      else high = mid;
+    }
+    return low;
+  }
+
+  function noteWindow(startTime, endTime) {
+    const start = noteIndexAtOrAfter(startTime);
+    let end = start;
+    while (end < state.parsedNotes.length && state.parsedNotes[end].time <= endTime) end += 1;
+    return { start, end };
   }
 
   function renderFrame() {
@@ -1966,7 +2096,10 @@
       activeIndices = state.mode === 'tuner' ? new Set() : renderLaneFrame(ctx, width, height);
     }
 
-    document.querySelectorAll('.tongue').forEach(pad => {
+    const playbackPads = state.stageTonguePads.length
+      ? state.stageTonguePads
+      : [...els.stageDrumWrap.querySelectorAll('.tongue'), ...els.highDrumWrap.querySelectorAll('.tongue')];
+    playbackPads.forEach(pad => {
       const idx = Number(pad.dataset.noteIndex);
       if (pad.classList.contains('high-tongue')) {
         const slot = Number(pad.dataset.highSlot);
@@ -1984,24 +2117,37 @@
     const previewSeconds = 4.2 / state.speed;
     const enabled = highDrumEnabled();
     const alwaysVisible = enabled && Boolean(state.instrument?.highDrumAlwaysVisible);
-    const approaching = enabled && state.playing && !state.countInActive
-      ? state.parsedNotes
-        .filter(note => highDrumSlotForLabel(note.label) >= 0)
-        .map(note => note.time - state.currentTime)
-        .filter(dt => dt >= -0.35 && dt <= previewSeconds)
-      : [];
-    const hasApproachingNote = approaching.length > 0;
+
+    if (!enabled) {
+      els.highDrumWrap.classList.remove('visible', 'always-visible', 'engaged');
+      els.highDrumWrap.style.setProperty('--high-cue', '0');
+      return;
+    }
+
+    let hasApproachingNote = false;
+    let nearest = previewSeconds;
+    if (state.playing && !state.countInActive) {
+      const { start, end } = noteWindow(state.currentTime - 0.35, state.currentTime + previewSeconds);
+      for (let index = start; index < end; index += 1) {
+        const note = state.parsedNotes[index];
+        if (highDrumSlotForLabel(note.label) < 0) continue;
+        const dt = note.time - state.currentTime;
+        hasApproachingNote = true;
+        nearest = Math.min(nearest, Math.abs(dt));
+      }
+    }
+
     const visible = alwaysVisible || hasApproachingNote;
-    const nearest = hasApproachingNote ? Math.min(...approaching.map(dt => Math.abs(dt))) : previewSeconds;
     const cue = hasApproachingNote ? Math.max(0, Math.min(1, 1 - nearest / previewSeconds)) : 0;
     els.highDrumWrap.classList.toggle('visible', visible);
     els.highDrumWrap.classList.toggle('always-visible', alwaysVisible);
     els.highDrumWrap.classList.toggle('engaged', hasApproachingNote);
     els.highDrumWrap.style.setProperty('--high-cue', cue.toFixed(3));
-    updateCompanionGuides(previewSeconds);
+    if (visible) updateCompanionGuides(previewSeconds);
   }
 
   function companionGeometry() {
+    if (state.companionGeometryCache) return state.companionGeometryCache;
     if (!els.highDrumWrap) return null;
     const body = els.highDrumWrap.querySelector('.high-drum-body');
     if (!body || !body.offsetWidth) return null;
@@ -2009,7 +2155,7 @@
     const zoneY = els.highDrumWrap.offsetTop;
     const localCx = body.offsetLeft;
     const localCy = body.offsetTop;
-    return {
+    state.companionGeometryCache = {
       zoneX,
       zoneY,
       zoneWidth: els.highDrumWrap.offsetWidth,
@@ -2020,6 +2166,7 @@
       cy: zoneY + localCy,
       drumSize: body.offsetWidth
     };
+    return state.companionGeometryCache;
   }
 
   function pointInsideCompanionZone(x, y, inset = 0) {
@@ -2034,16 +2181,17 @@
   function companionGuideStrengths(previewSeconds) {
     const strengths = new Map();
     if (!state.playing || state.countInActive || state.mode === 'tuner') return strengths;
-    state.parsedNotes.forEach(note => {
+    const { start, end } = noteWindow(state.currentTime - 0.16, state.currentTime + previewSeconds);
+    for (let index = start; index < end; index += 1) {
+      const note = state.parsedNotes[index];
       const slot = highDrumSlotForLabel(note.label);
-      if (slot < 0) return;
+      if (slot < 0) continue;
       const dt = note.time - state.currentTime;
-      if (dt < -0.16 || dt > previewSeconds) return;
       const proximity = Math.max(0, Math.min(1, 1 - Math.max(0, dt) / previewSeconds));
       const hitFade = dt < 0 ? Math.max(0, 1 + dt / 0.16) : 1;
       const strength = Math.pow(proximity, 1.55) * hitFade;
       strengths.set(slot, Math.max(strengths.get(slot) || 0, strength));
-    });
+    }
     return strengths;
   }
 
@@ -2051,28 +2199,27 @@
     const geometry = companionGeometry();
     const svg = els.highDrumWrap?.querySelector('.companion-guides');
     if (!geometry || !svg) return;
-    svg.setAttribute('viewBox', `0 0 ${geometry.zoneWidth} ${geometry.zoneHeight}`);
+    const geometryKey = [geometry.zoneWidth, geometry.zoneHeight, geometry.localCx, geometry.localCy, geometry.drumSize].join(':');
+    if (state.companionGuideGeometryKey !== geometryKey) {
+      svg.setAttribute('viewBox', `0 0 ${geometry.zoneWidth} ${geometry.zoneHeight}`);
+      svg.querySelectorAll('line').forEach(line => {
+        const slot = Number(line.dataset.slot);
+        const angle = slot * Math.PI / 4;
+        const dx = Math.sin(angle);
+        const dy = -Math.cos(angle);
+        const tongueRadius = geometry.drumSize * .31;
+        const startRadius = tongueRadius + geometry.drumSize * .13;
+        const edgeRadius = distanceToStageEdge(geometry.localCx, geometry.localCy, dx, dy, geometry.zoneWidth, geometry.zoneHeight, 15);
+        line.setAttribute('x1', (geometry.localCx + dx * startRadius).toFixed(2));
+        line.setAttribute('y1', (geometry.localCy + dy * startRadius).toFixed(2));
+        line.setAttribute('x2', (geometry.localCx + dx * edgeRadius).toFixed(2));
+        line.setAttribute('y2', (geometry.localCy + dy * edgeRadius).toFixed(2));
+      });
+      state.companionGuideGeometryKey = geometryKey;
+    }
     const strengths = companionGuideStrengths(previewSeconds);
     svg.querySelectorAll('line').forEach(line => {
       const slot = Number(line.dataset.slot);
-      const angle = slot * Math.PI / 4;
-      const dx = Math.sin(angle);
-      const dy = -Math.cos(angle);
-      const tongueRadius = geometry.drumSize * .31;
-      const startRadius = tongueRadius + geometry.drumSize * .13;
-      const edgeRadius = distanceToStageEdge(
-        geometry.localCx,
-        geometry.localCy,
-        dx,
-        dy,
-        geometry.zoneWidth,
-        geometry.zoneHeight,
-        15
-      );
-      line.setAttribute('x1', (geometry.localCx + dx * startRadius).toFixed(2));
-      line.setAttribute('y1', (geometry.localCy + dy * startRadius).toFixed(2));
-      line.setAttribute('x2', (geometry.localCx + dx * edgeRadius).toFixed(2));
-      line.setAttribute('y2', (geometry.localCy + dy * edgeRadius).toFixed(2));
       line.style.setProperty('--guide-strength', (strengths.get(slot) || 0).toFixed(3));
     });
   }
@@ -2082,7 +2229,6 @@
   function buildStarField(width, height) {
     if (!width || !height) return;
     state.stars = Array.from({ length: STAR_COUNT }, () => {
-      // depth 0 = far away (small, dim, barely moves), 1 = near (bigger, brighter, faster)
       const depth = Math.random() ** 1.4;
       return {
         x: Math.random() * width,
@@ -2131,8 +2277,29 @@
   ];
 
   function drawAmoeba(ctx, cx, cy, size, now) {
+    const compactLayout = ctx.canvas.clientWidth <= 1100 || window.matchMedia?.('(pointer: coarse)').matches;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
+
+    if (compactLayout) {
+      // The backdrop canvas is now locked to the stage size, so this broad compact-screen
+      // light stays centred on the drum. Keep it to one soft gradient for mobile performance.
+      const breathe = 1 + Math.sin(now * 0.42) * 0.035;
+      const radius = size * 0.73 * breathe;
+      const gradient = ctx.createRadialGradient(cx, cy, size * 0.22, cx, cy, radius);
+      gradient.addColorStop(0, 'rgba(112,143,255,.17)');
+      gradient.addColorStop(0.34, 'rgba(99,130,246,.115)');
+      gradient.addColorStop(0.66, 'rgba(99,130,246,.05)');
+      gradient.addColorStop(0.86, 'rgba(94,234,212,.016)');
+      gradient.addColorStop(1, 'rgba(109,130,246,0)');
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+
     AMOEBA_LOBES.forEach(lobe => {
       const breathe = 1 + 0.19 * Math.sin(now * lobe.speed * 2.3 + lobe.phase);
       const ox = cx + Math.cos(now * lobe.speed + lobe.phase) * size * lobe.orbit;
@@ -2152,14 +2319,15 @@
 
   function drawDrumHalo(ctx, cx, cy, size, now) {
     const pulse = 1 + Math.sin(now * 0.82) * 0.035;
-    const innerRadius = size * 0.47;
-    const outerRadius = size * 0.76 * pulse;
+    const compactLayout = ctx.canvas.clientWidth <= 1100 || window.matchMedia?.('(pointer: coarse)').matches;
+    const innerRadius = size * (compactLayout ? 0.45 : 0.47);
+    const outerRadius = size * (compactLayout ? 0.72 : 0.76) * pulse;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     const halo = ctx.createRadialGradient(cx, cy, innerRadius, cx, cy, outerRadius);
-    halo.addColorStop(0, 'rgba(126,156,255,.3)');
-    halo.addColorStop(0.22, 'rgba(116,147,255,.17)');
-    halo.addColorStop(0.58, 'rgba(109,130,246,.07)');
+    halo.addColorStop(0, compactLayout ? 'rgba(126,156,255,.30)' : 'rgba(126,156,255,.3)');
+    halo.addColorStop(0.22, compactLayout ? 'rgba(116,147,255,.17)' : 'rgba(116,147,255,.17)');
+    halo.addColorStop(0.58, compactLayout ? 'rgba(109,130,246,.06)' : 'rgba(109,130,246,.07)');
     halo.addColorStop(1, 'rgba(109,130,246,0)');
     ctx.fillStyle = halo;
     ctx.beginPath();
@@ -2180,15 +2348,16 @@
   function radialGuideStrengths(previewSeconds) {
     const strengths = new Map();
     if (!state.playing || state.countInActive || state.mode === 'tuner') return strengths;
-    state.parsedNotes.forEach(note => {
+    const { start, end } = noteWindow(state.currentTime - 0.16, state.currentTime + previewSeconds);
+    for (let index = start; index < end; index += 1) {
+      const note = state.parsedNotes[index];
+      if (highDrumSlotForLabel(note.label) >= 0) continue;
       const dt = note.time - state.currentTime;
-      if (dt < -0.16 || dt > previewSeconds) return;
-      if (highDrumSlotForLabel(note.label) >= 0) return;
       const proximity = Math.max(0, Math.min(1, 1 - Math.max(0, dt) / previewSeconds));
       const hitFade = dt < 0 ? Math.max(0, 1 + dt / 0.16) : 1;
       const strength = Math.pow(proximity, 1.65) * hitFade;
       strengths.set(note.noteIndex, Math.max(strengths.get(note.noteIndex) || 0, strength));
-    });
+    }
     return strengths;
   }
 
@@ -2230,6 +2399,7 @@
     const laneW = width / lanes;
     const hitY = height - 52;
     const previewSeconds = 4.2 / state.speed;
+    const compactNotes = width <= 760 || window.matchMedia?.('(pointer: coarse)').matches;
 
     ctx.lineWidth = 1;
     for (let i = 0; i <= lanes; i++) {
@@ -2251,13 +2421,24 @@
     ctx.shadowBlur = 0;
 
     const activeIndices = new Set();
-    state.parsedNotes.forEach(note => {
+    const { start, end } = noteWindow(state.currentTime - 0.55, state.currentTime + previewSeconds);
+    for (let index = start; index < end; index += 1) {
+      const note = state.parsedNotes[index];
       const dt = note.time - state.currentTime;
-      if (dt < -0.55 || dt > previewSeconds) return;
       const y = hitY - (dt / previewSeconds) * (hitY - 26);
       const x = note.noteIndex * laneW + laneW / 2;
-      const radius = Math.max(7, Math.min(28, laneW * .32));
-      const noteHeight = laneW < 30 ? 22 : 28;
+      const travelProgress = Math.max(0, Math.min(1, 1 - dt / previewSeconds));
+      const growth = compactNotes
+        ? 0.72 + Math.pow(travelProgress, 0.72) * 0.48
+        : 1;
+      const baseNoteWidth = compactNotes
+        ? Math.max(40, Math.min(56, width * .12))
+        : Math.max(14, Math.min(56, laneW * .64));
+      const radius = baseNoteWidth * growth / 2;
+      const baseNoteHeight = compactNotes
+        ? Math.max(28, Math.min(36, width * .08))
+        : laneW < 30 ? 22 : 28;
+      const noteHeight = baseNoteHeight * growth;
       const color = noteColor(note.noteIndex);
       const alpha = dt < -0.2 ? Math.max(0, 1 + dt * 2) : 1;
       const noteIsMoving = state.playing && !state.countInActive && state.mode !== 'wait';
@@ -2269,10 +2450,13 @@
       roundRect(ctx, x - radius, y - noteHeight / 2, radius * 2, noteHeight, noteHeight / 2);
       ctx.fill();
       ctx.shadowBlur = 0;
-      drawFlyingNoteLabel(ctx, note.label, x, y, laneW < 30 ? 10 : 13, noteInkColor(color));
+      const labelSize = compactNotes
+        ? Math.max(13, Math.min(18, width * .04 * growth))
+        : laneW < 30 ? 10 : 13;
+      drawFlyingNoteLabel(ctx, note.label, x, y, labelSize, noteInkColor(color));
       ctx.globalAlpha = 1;
       if (Math.abs(dt) < .14) activeIndices.add(note.noteIndex);
-    });
+    }
     return activeIndices;
   }
 
@@ -2394,6 +2578,29 @@
     return (hash >>> 0) / 4294967295;
   }
 
+  // One reusable particle template is animated for every note. Notes only receive a
+  // cached phase offset, so we no longer run four string hashes for every particle on
+  // every frame. The trails keep their varied look without repeated random work.
+  const PARTICLE_TEMPLATE = Array.from({ length: 36 }, (_, index) => {
+    const wave = value => (Math.sin(value * 12.9898 + index * 78.233) * 43758.5453) % 1;
+    const unit = value => Math.abs(wave(value));
+    return {
+      stream: index % 3 - 1,
+      streamIndex: Math.floor(index / 3),
+      side: unit(1.3),
+      size: unit(2.7),
+      phase: unit(4.1),
+      speed: unit(6.9)
+    };
+  });
+
+  function particlePhase(noteId) {
+    if (state.particlePhaseCache.has(noteId)) return state.particlePhaseCache.get(noteId);
+    const phase = particleSeed(noteId, 0, 91);
+    state.particlePhaseCache.set(noteId, phase);
+    return phase;
+  }
+
   function drawFlyingNoteLabel(ctx, label, x, y, fontSize, inkColor) {
     const octave = splitOctaveMark(label);
     ctx.save();
@@ -2424,15 +2631,17 @@
     const lightG = Math.round(g + (255 - g) * 0.38);
     const lightB = Math.round(b + (255 - b) * 0.38);
     const clock = performance.now() / 1000;
+    const notePhase = particlePhase(note.id);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     for (let particle = 0; particle < 27; particle++) {
-      const stream = particle % 3 - 1;
-      const streamIndex = Math.floor(particle / 3);
-      const sideSeed = particleSeed(note.id, particle, 12);
-      const sizeSeed = particleSeed(note.id, particle, 13);
-      const phaseSeed = particleSeed(note.id, particle, 14);
-      const speedSeed = particleSeed(note.id, particle, 15);
+      const template = PARTICLE_TEMPLATE[particle];
+      const stream = template.stream;
+      const streamIndex = template.streamIndex;
+      const sideSeed = template.side;
+      const sizeSeed = template.size;
+      const phaseSeed = (template.phase + notePhase) % 1;
+      const speedSeed = template.speed;
       const flow = (streamIndex / 9 + clock * (0.58 + speedSeed * 0.26) + phaseSeed * 0.08) % 1;
       const life = Math.sin(flow * Math.PI);
       const tailLength = noteHeight * (0.34 + flow * 2.35) * (stream === 0 ? 1.18 : 1);
@@ -2458,6 +2667,7 @@
   function renderRadialFrame(ctx, width, height, underCtx = null) {
     const previewSeconds = 4.2 / state.speed;
     const { drumSize, scale, cx, cy } = radialGeometry(width, height);
+    const compactNotes = width <= 760 || window.matchMedia?.('(pointer: coarse)').matches;
     if (els.stageDrumWrap) {
       els.stageDrumWrap.style.left = `${cx}px`;
       els.stageDrumWrap.style.top = `${cy}px`;
@@ -2466,12 +2676,13 @@
 
     const started = playbackStarted();
     const activeIndices = new Set();
-    state.parsedNotes.forEach(note => {
+    const { start, end } = noteWindow(state.currentTime - 0.48, state.currentTime + previewSeconds);
+    for (let index = start; index < end; index += 1) {
+      const note = state.parsedNotes[index];
       const dt = note.time - state.currentTime;
-      if (dt < -0.48 || dt > previewSeconds) return;
       // Before the transport rolls, keep notes clear of the drum so every label is legible.
-      if (!started && dt < 0.42) return;
-      if (!started && highDrumSlotForLabel(note.label) >= 0) return;
+      if (!started && dt < 0.42) continue;
+      if (!started && highDrumSlotForLabel(note.label) >= 0) continue;
 
       const target = getHighDrumTarget(note.label, cx, cy)
         || getPlacementTarget(getDrumPlacement(note.noteIndex), scale, cx, cy);
@@ -2546,13 +2757,20 @@
       const lightG = Math.round(g + (255 - g) * 0.3);
       const lightB = Math.round(b + (255 - b) * 0.3);
       const travelProgress = Math.max(0, Math.min(1, 1 - dt / previewSeconds));
-      const growth = 0.58 + Math.pow(travelProgress, 0.72) * 0.54;
+      const growth = (compactNotes ? 0.72 : 0.58)
+        + Math.pow(travelProgress, 0.72) * (compactNotes ? 0.48 : 0.54);
       const alpha = (dt < -0.18 ? Math.max(0, 1 + dt * 2.5) : 1) * depthAlpha;
       const approach = Math.max(0, Math.min(1, 1 - Math.abs(dt) / 0.6));
-      const mainCapsuleW = Math.max(32, Math.min(48, 38 * scale + 8));
-      const mainCapsuleH = Math.max(22, Math.min(30, 24 * scale + 5));
+      const mainCapsuleW = compactNotes
+        ? Math.max(40, Math.min(56, 44 * scale + 10))
+        : Math.max(32, Math.min(48, 38 * scale + 8));
+      const mainCapsuleH = compactNotes
+        ? Math.max(28, Math.min(36, 30 * scale + 7))
+        : Math.max(22, Math.min(30, 24 * scale + 5));
       const companionGem = target.high
-        ? Math.max(23, Math.min(34, 20 + target.companion.drumSize * .07))
+        ? compactNotes
+          ? Math.max(28, Math.min(38, 24 + target.companion.drumSize * .075))
+          : Math.max(23, Math.min(34, 20 + target.companion.drumSize * .07))
         : 0;
       const capsuleW = (target.high ? companionGem : mainCapsuleW) * growth * (1 + approach * 0.06);
       const capsuleH = (target.high ? companionGem : mainCapsuleH) * growth * (1 + approach * 0.06);
@@ -2563,18 +2781,20 @@
         // Companion trails are intentionally shorter and calmer. The diamond shape plus
         // the cool halo makes them distinct without replacing each tongue's note colour.
         const particleClock = performance.now() / 1000;
+        const notePhase = particlePhase(note.id);
         const perpendicularX = -trailDy;
         const perpendicularY = trailDx;
         const particleCount = target.high ? 18 : 36;
         drawCtx.save();
         drawCtx.globalCompositeOperation = 'lighter';
         for (let particle = 0; particle < particleCount; particle++) {
-          const stream = particle % 3 - 1;
-          const streamIndex = Math.floor(particle / 3);
-          const sideSeed = particleSeed(note.id, particle, 2);
-          const sizeSeed = particleSeed(note.id, particle, 3);
-          const phaseSeed = particleSeed(note.id, particle, 4);
-          const speedSeed = particleSeed(note.id, particle, 5);
+          const template = PARTICLE_TEMPLATE[particle];
+          const stream = template.stream;
+          const streamIndex = template.streamIndex;
+          const sideSeed = template.side;
+          const sizeSeed = template.size;
+          const phaseSeed = (template.phase + notePhase) % 1;
+          const speedSeed = template.speed;
           const rows = target.high ? 6 : 12;
           const flow = (streamIndex / rows + particleClock * (0.55 + speedSeed * 0.24) + phaseSeed * 0.08) % 1;
           const life = Math.sin(flow * Math.PI);
@@ -2644,14 +2864,18 @@
       drawCtx.save();
       drawCtx.globalAlpha = alpha;
       const labelSize = target.high
-        ? Math.max(8, Math.min(13, (9.5 + target.companion.drumSize * .012) * growth))
-        : Math.max(8, Math.min(15, (11 + scale * 2) * growth));
+        ? compactNotes
+          ? Math.max(12, Math.min(16, (12 + target.companion.drumSize * .012) * growth))
+          : Math.max(8, Math.min(13, (9.5 + target.companion.drumSize * .012) * growth))
+        : compactNotes
+          ? Math.max(13, Math.min(18, (14 + scale * 3) * growth))
+          : Math.max(8, Math.min(15, (11 + scale * 2) * growth));
       drawFlyingNoteLabel(drawCtx, note.label, x, y, labelSize, noteInkColor(color));
       drawCtx.restore();
 
       if (companionClip) drawCtx.restore();
       if (started && Math.abs(dt) < .14) activeIndices.add(note.noteIndex);
-    });
+    }
     return activeIndices;
   }
 
@@ -2696,9 +2920,21 @@
   }
 
   async function ensureAudio() {
-    if (!state.audioContext) state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    if (!state.audioContext) {
+      state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      state.masterGain = state.audioContext.createGain();
+      state.masterGain.gain.value = document.hidden ? 0 : 1;
+      state.masterGain.connect(state.audioContext.destination);
+    }
     if (state.audioContext.state === 'suspended') await state.audioContext.resume();
     return state.audioContext;
+  }
+
+  function setAudioMuted(muted) {
+    if (!state.audioContext || !state.masterGain) return;
+    const now = state.audioContext.currentTime;
+    state.masterGain.gain.cancelScheduledValues(now);
+    state.masterGain.gain.setValueAtTime(muted ? 0 : 1, now);
   }
 
   async function playMidi(midi, referencePitch = 440, accent = false) {
@@ -2726,7 +2962,7 @@
     osc1.connect(filter);
     osc2.connect(filter);
     filter.connect(master);
-    master.connect(context.destination);
+    master.connect(state.masterGain || context.destination);
     osc1.start(now);
     osc2.start(now);
     osc1.stop(now + 1.4);
@@ -2746,7 +2982,7 @@
     osc.frequency.value = accent ? 1300 : 900;
     gain.gain.setValueAtTime(.08, context.currentTime);
     gain.gain.exponentialRampToValueAtTime(.0001, context.currentTime + .045);
-    osc.connect(gain).connect(context.destination);
+    osc.connect(gain).connect(state.masterGain || context.destination);
     osc.start();
     osc.stop(context.currentTime + .05);
   }
@@ -3391,18 +3627,26 @@
     state.playbackStartedAt = performance.now() - (state.currentTime / state.speed) * 1000;
     state.lastScheduledIndex = state.parsedNotes.findIndex(n => n.time >= state.currentTime - .02) - 1;
     state.lastMetronomeBeat = Math.floor(state.currentTime / state.secondsPerBeat) - 1;
+    state.lastVisualAt = 0;
     updateTransportUI();
     cancelAnimationFrame(state.animationId);
     state.animationId = requestAnimationFrame(tick);
   }
 
   function tick(now) {
-    if (!state.playing || state.mode === 'wait') return;
+    if (!state.playing || state.mode === 'wait' || document.hidden) return;
     state.currentTime = Math.min(state.duration, ((now - state.playbackStartedAt) / 1000) * state.speed);
     scheduleDueAudio();
     if (state.metronome) scheduleMetronome();
-    updatePracticeUI();
-    renderFrame();
+    // Audio stays checked every animation frame, while the expensive canvases can run at
+    // ~50fps on touch layouts. The motion remains visually smooth and frees GPU/CPU time.
+    const compactVisuals = els.noteCanvas.clientWidth <= 1100 || window.matchMedia?.('(pointer: coarse)').matches;
+    const visualInterval = compactVisuals ? 20 : 0;
+    if (!visualInterval || !state.lastVisualAt || now - state.lastVisualAt >= visualInterval) {
+      state.lastVisualAt = now;
+      updatePracticeUI();
+      renderFrame();
+    }
     if (state.sectionLoop && Number.isFinite(state.loopB) && state.currentTime >= state.loopB - .002) {
       restartSectionLoopCycle(now);
       state.animationId = requestAnimationFrame(tick);
@@ -3563,6 +3807,12 @@
       button.classList.toggle('active', button.dataset.view === state.visualMode);
       button.setAttribute('aria-pressed', String(button.dataset.view === state.visualMode));
     });
+    if (els.mobileViewToggleBtn) {
+      const nextView = radial ? 'Falling lanes' : 'Drum centre';
+      els.mobileViewToggleBtn.dataset.view = state.visualMode;
+      els.mobileViewToggleBtn.setAttribute('aria-label', `Switch display to ${nextView}`);
+      els.mobileViewToggleBtn.title = `Switch to ${nextView}`;
+    }
     window.requestAnimationFrame(resizeCanvas);
   }
 
@@ -3656,7 +3906,6 @@
     els.deleteEditorBtn.hidden = !savedCustomSong;
     els.songTitleInput.value = song?.title || '';
     setSongBpmValue(song?.bpm || 120);
-    els.songFolderSelect.value = song?.folder === 'demo' && !song?.sourceSongId ? 'demo' : 'library';
     const currentScale = state.instrument.scaleType === 'custom' ? 'any' : state.instrument.scaleType;
     els.songScaleSelect.value = song?.scaleType || currentScale || 'any';
     state.editorTimeline = timelineFromStoredSequence(song?.sequence || '');
@@ -3835,7 +4084,6 @@
       draftKey: state.editorDraftKey,
       title: els.songTitleInput?.value || '',
       bpm: els.songBpmInput?.value || '',
-      folder: els.songFolderSelect?.value || 'library',
       scaleType: els.songScaleSelect?.value || '',
       sequence: els.sequenceInput?.value || '',
       timeline: (state.editorTimeline || []).map(item => ({
@@ -3908,7 +4156,6 @@
   function applyDraft(draft) {
     els.songTitleInput.value = draft.title || '';
     if (draft.bpm) setSongBpmValue(draft.bpm);
-    if (draft.folder) els.songFolderSelect.value = draft.folder === 'demo' ? 'demo' : 'library';
     if (draft.scaleType) els.songScaleSelect.value = draft.scaleType;
     els.sequenceInput.value = draft.sequence || '';
     state.editorTimeline = Array.isArray(draft.timeline) && draft.timeline.length
@@ -3944,7 +4191,7 @@
     const cleanSequence = els.sequenceInput.value.trim();
     const sequence = editorSequenceWithDurations();
     const scaleType = els.songScaleSelect.value;
-    const folder = els.songFolderSelect.value === 'demo' ? 'demo' : 'library';
+    const folder = 'library';
     const invalid = [];
     if (!title) invalid.push(els.songTitleInput);
     if (!Number.isFinite(bpm) || bpm < 30 || bpm > 240) invalid.push(els.songBpmInput);
@@ -4003,7 +4250,7 @@
     saveCustomSongs();
     els.editorDialog.close();
     selectSong(state.selectedId);
-    showToast('Song saved.', 'success');
+    showToast('Song saved privately in this browser. Export a backup for another device.', 'success');
   }
 
   function rememberSequenceSelection() {
@@ -4529,7 +4776,7 @@
         bpm: Number(source.bpm),
         sequence: String(source.sequence),
         scaleType: ['major', 'major-pentatonic', 'minor-pentatonic', 'any'].includes(source.scaleType) ? source.scaleType : 'any',
-        folder: source.folder === 'demo' ? 'demo' : 'library',
+        folder: 'library',
         builtIn: false
       };
       state.songs.push(song);
@@ -5329,10 +5576,14 @@
       maybeStartModeWalkthrough(btn.dataset.mode);
     }));
     document.querySelectorAll('.view-segment').forEach(btn => btn.addEventListener('click', () => setVisualMode(btn.dataset.view)));
+    els.mobileViewToggleBtn?.addEventListener('click', () => {
+      setVisualMode(state.visualMode === 'radial' ? 'lanes' : 'radial');
+    });
     els.editorForm.addEventListener('submit', saveEditorSong);
     ['focus', 'click', 'select', 'keyup', 'input'].forEach(eventName => {
       els.sequenceInput.addEventListener(eventName, rememberSequenceSelection);
     });
+    els.sequenceInput.addEventListener('click', placeSequenceCaretFromBackdropPoint);
     els.sequenceInput.addEventListener('input', () => {
       normalizeSequenceInputValue();
       const shortcutIndex = timingShortcutIndexBeforeCaret();
@@ -5360,7 +5611,7 @@
       openEditor(state.songs.find(item => item.id === state.editorSongId) || null);
       showToast('Draft discarded.', 'success');
     });
-    [els.songTitleInput, els.songBpmInput, els.songFolderSelect, els.songScaleSelect, els.sequenceInput].forEach(field => {
+    [els.songTitleInput, els.songBpmInput, els.songScaleSelect, els.sequenceInput].forEach(field => {
       field?.addEventListener('input', queueDraftSave);
       field?.addEventListener('change', queueDraftSave);
     });
@@ -5381,23 +5632,31 @@
       // Stops shift-click from dragging a text selection across the sheet.
       if (event.shiftKey) event.preventDefault();
     });
+    els.timingRangeBtn?.addEventListener('click', () => {
+      if (state.editorTimingSelectionIndex < 0) return;
+      state.editorRangeSelectArmed = !state.editorRangeSelectArmed;
+      renderTimingEditor();
+    });
     els.timingTokenStrip?.addEventListener('click', event => {
       if (event.target.closest('.timing-lyric')) return;
       const token = event.target.closest('.timing-token[data-timeline-index]');
       if (!token) return;
       const index = Number(token.dataset.timelineIndex);
       const anchor = state.editorTimingSelectionIndex;
-      if (event.shiftKey && anchor >= 0) {
+      if ((event.shiftKey || state.editorRangeSelectArmed) && anchor >= 0) {
         const from = Math.min(anchor, index);
         const to = Math.max(anchor, index);
         const range = [];
         for (let i = from; i <= to; i += 1) range.push(i);
         setTimingSelection(range, anchor);
+        state.editorRangeSelectArmed = false;
       } else if (event.ctrlKey || event.metaKey) {
+        state.editorRangeSelectArmed = false;
         const next = new Set(timingSelectionIndices());
         if (next.has(index)) next.delete(index); else next.add(index);
         setTimingSelection([...next], index);
       } else {
+        state.editorRangeSelectArmed = false;
         setTimingSelection([index], index);
       }
       renderTimingEditor();
@@ -5530,7 +5789,38 @@
     }, true);
     window.addEventListener('pagehide', stopMicrophone);
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) stopAmbientLoop(); else startAmbientLoop();
+      if (document.hidden) {
+        stopAmbientLoop();
+        setAudioMuted(true);
+        if (state.animationId) {
+          cancelAnimationFrame(state.animationId);
+          state.animationId = 0;
+        }
+        return;
+      }
+
+      // Background tabs stop receiving normal animation frames. Resynchronise the visual
+      // clock, mark every elapsed note as already scheduled, then unmute. This prevents
+      // the frightening burst where all notes missed in another tab played at once.
+      if (state.playing && state.mode !== 'wait') {
+        const now = performance.now();
+        state.currentTime = Math.min(state.duration, ((now - state.playbackStartedAt) / 1000) * state.speed);
+        state.lastScheduledIndex = noteIndexAtOrAfter(state.currentTime + 0.001) - 1;
+        state.lastMetronomeBeat = Math.floor(state.currentTime / state.secondsPerBeat);
+        state.lastVisualAt = 0;
+        updatePracticeUI();
+        renderFrame();
+        if (state.currentTime >= state.duration - 0.002) {
+          setAudioMuted(false);
+          finishPlayback();
+        } else {
+          setAudioMuted(false);
+          state.animationId = requestAnimationFrame(tick);
+        }
+      } else {
+        setAudioMuted(false);
+      }
+      startAmbientLoop();
     });
     if ('ResizeObserver' in window) {
       state.resizeObserver = new ResizeObserver(resizeCanvas);

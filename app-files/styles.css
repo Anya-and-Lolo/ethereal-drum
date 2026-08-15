@@ -184,6 +184,13 @@ h1,h2,h3,p { margin: 0; }
 .top-actions { margin-left:auto; display:flex; gap:8px; }
 .help-tour-btn { flex:none; color:var(--accent-2); font-size:18px; font-weight:850; }
 .help-tour-btn:hover { background:rgba(94,234,212,.12); }
+.mobile-view-toggle { display:none; }
+.mobile-view-toggle svg { width:24px; height:24px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.mobile-view-toggle .view-mode-icon { display:none; }
+.mobile-view-toggle[data-view="radial"] .view-mode-icon-lanes,
+.mobile-view-toggle[data-view="lanes"] .view-mode-icon-drum { display:block; }
+.mobile-view-toggle .view-mode-icon-drum circle { fill:currentColor; stroke:none; }
+.mobile-view-toggle .view-mode-icon-lanes .lane-guide { opacity:.22; stroke-width:1.2; }
 
 .trainer-grid { display:grid; grid-template-columns:minmax(0,1.65fr) minmax(290px,.75fr); gap:18px; align-items:start; }
 .trainer-card, .practice-card { min-width:0; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden; }
@@ -222,6 +229,7 @@ h1,h2,h3,p { margin: 0; }
 .stage-overlay { position:absolute; z-index:5; display:flex; gap:8px; }
 .top-left { top:14px; left:14px; }
 .stage-overlay span { padding:7px 9px; background:rgba(10,14,25,.65); border:1px solid var(--line); backdrop-filter:blur(10px); border-radius:10px; color:var(--muted); font-size:11px; }
+.mobile-stage-stats { display:none; }
 .hit-label { position:absolute; left:18px; bottom:49px; font-size:9px; font-weight:900; letter-spacing:.15em; color:rgba(255,255,255,.45); }
 .count-in[hidden] { display:none; }
 .count-in { position:absolute; inset:0; display:grid; place-items:center; font-size:clamp(80px,16vw,180px); font-weight:900; color:white; text-shadow:0 0 50px rgba(167,139,250,.65); background:rgba(9,13,24,.35); z-index:5; }
@@ -398,7 +406,16 @@ input[type="range"] { width:100%; accent-color:var(--accent); }
 .form-grid { display:grid; gap:14px; }
 .two-col { grid-template-columns:1fr 180px; }
 .three-col { grid-template-columns:minmax(0,1fr) 180px 160px; }
-.song-options-grid { grid-template-columns:minmax(220px,1fr) 155px 145px minmax(170px,.75fr); }
+.song-options-grid { grid-template-columns:minmax(220px,1fr) 155px minmax(170px,.75fr); }
+.song-storage-notice {
+  display:block;
+  grid-column:1 / -1;
+  margin:0;
+  color:var(--muted);
+  font-size:10px;
+  font-weight:550;
+  line-height:1.4;
+}
 .instrument-options { grid-template-columns:repeat(2,minmax(0,1fr)); margin-bottom:14px; }
 .high-drum-option {
   display:flex; align-items:center; justify-content:space-between; gap:16px; margin:0 0 16px;
@@ -989,7 +1006,15 @@ input[type="range"] { width:100%; accent-color:var(--accent); }
 #noteCanvas { position:absolute; inset:0; z-index:4; pointer-events:none; }
 /* Back canvas holds the starfield, the drifting amoeba glow and the flight guide lines,
    so all of that sits BEHIND the drum. Only the flying notes are drawn in front. */
-#noteCanvasBack { position:absolute; inset:0; z-index:1; pointer-events:none; display:none; }
+#noteCanvasBack {
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  z-index:1;
+  pointer-events:none;
+  display:none;
+}
 .note-stage.radial-view #noteCanvasBack { display:block; }
 .stage-drum-wrap {
   display:none; position:absolute; left:50%; top:50%; width:360px; height:360px; z-index:2;
@@ -1674,4 +1699,695 @@ input[type="range"] { width:100%; accent-color:var(--accent); }
   .donate-btn { width:40px; height:40px; min-height:40px; padding:0; border-radius:10px; }
   .donate-btn span { display:none; }
   .donate-btn img { width:23px; height:23px; }
+}
+
+
+/* v59: mobile composing and Jianpu selection polish */
+.timing-range-btn {
+  color:#ccfbf1 !important;
+  border-color:rgba(94,234,212,.28) !important;
+  background:rgba(45,212,191,.075) !important;
+}
+.timing-range-btn:hover:not(:disabled) {
+  border-color:rgba(94,234,212,.55) !important;
+  background:rgba(45,212,191,.13) !important;
+}
+.timing-range-btn.active {
+  color:#06231b !important;
+  border-color:#5eead4 !important;
+  background:#5eead4 !important;
+  box-shadow:0 0 15px rgba(94,234,212,.15);
+}
+
+@media (max-width:760px) {
+  /* Use the largest group (eight notes) to set one shared circle size. All three
+     octave groups therefore have the same left edge, note size, and gap. */
+  .mini-pads { grid-template-columns:minmax(0,1fr); gap:14px; margin-top:12px; }
+  .mini-pad-row,
+  .mini-pad-row:first-child { display:contents; }
+  .mini-pad-group { width:100%; min-width:0; gap:7px; }
+  .mini-pad-pads {
+    width:100%;
+    display:flex;
+    flex-wrap:nowrap;
+    justify-content:flex-start;
+    align-items:flex-start;
+    gap:7px;
+    --mobile-pad-size:clamp(28px, 8.5vw, 40px);
+  }
+  .mini-pad {
+    flex:0 0 var(--mobile-pad-size);
+    width:var(--mobile-pad-size);
+    max-width:none;
+    height:var(--mobile-pad-size);
+    aspect-ratio:1;
+    font-size:18px;
+  }
+  .mini-pads.show-pitch-names .mini-pad {
+    flex-basis:var(--mobile-pad-size);
+    width:var(--mobile-pad-size);
+    max-width:none;
+    height:calc(var(--mobile-pad-size) + 8px);
+    aspect-ratio:auto;
+    border-radius:15px;
+    padding:3px 0 2px;
+  }
+  .mini-pad-note-name { font-size:10px; }
+  .mini-pad-caption { font-size:16px; font-weight:600; letter-spacing:.06em; }
+
+  /* Note names has its own complete row; the three insert actions share the row below. */
+  .compose-actions {
+    width:100%;
+    display:grid;
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    gap:7px;
+  }
+  .compose-actions .note-names-switch {
+    grid-column:1 / -1;
+    width:100%;
+    min-height:44px;
+    margin:0;
+    padding:7px 9px 7px 11px;
+    justify-content:space-between;
+    border:1px solid rgba(255,255,255,.10);
+    border-radius:10px;
+    background:rgba(255,255,255,.035);
+  }
+  .compose-actions .note-names-switch .compact-switch-label { font-size:16px; font-weight:650; }
+  .compose-actions > .soft-btn {
+    width:100%;
+    min-width:0;
+    min-height:42px;
+    padding:8px 4px;
+    font-size:15px;
+  }
+
+  /* Tempo and scale are closely related and share one compact row. */
+  .song-options-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .song-title-option { grid-column:1 / -1; grid-row:1; }
+  .song-tempo-option { grid-column:1; grid-row:2; }
+  .song-scale-option { grid-column:2; grid-row:2; }
+  .song-storage-notice { grid-column:1 / -1; grid-row:3; font-size:11px; }
+
+  /* The Note sequence heading and tools become a tidy mobile control panel. */
+  .sequence-label-row {
+    display:block;
+    margin-bottom:8px;
+  }
+  .sequence-label-row > label {
+    margin-bottom:7px;
+    color:#cbd5e1;
+    font-size:10px;
+    font-weight:800;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+  }
+  .sequence-label-tools {
+    width:100%;
+    display:grid;
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    gap:6px;
+  }
+  .sequence-label-tools .expressive-timing-switch {
+    grid-column:1 / -1;
+    width:100%;
+    min-height:38px;
+    justify-content:space-between;
+    padding:6px 8px 6px 10px;
+    border:1px solid rgba(255,255,255,.10);
+    border-radius:10px;
+    background:rgba(255,255,255,.035);
+  }
+  .sequence-label-tools .expressive-timing-switch .compact-switch-label {
+    display:inline !important;
+    font-size:10.5px;
+  }
+  .sequence-label-tools .text-tool-btn {
+    min-width:0;
+    min-height:34px;
+    padding:7px 4px;
+    border:1px solid rgba(255,255,255,.10);
+    border-radius:9px;
+    background:rgba(255,255,255,.035);
+    text-align:center;
+    font-size:9.5px;
+    line-height:1.15;
+  }
+  .sequence-label-tools .text-tool-btn:hover {
+    text-decoration:none;
+    background:rgba(94,234,212,.08);
+    border-color:rgba(94,234,212,.25);
+  }
+
+  /* Keep rhythm actions usable with one thumb and the software keyboard open. */
+  .timing-editor { padding:11px 10px 12px; }
+  .timing-editor-head { gap:9px; }
+  .timing-editor-head p { font-size:10.5px; line-height:1.4; }
+  .timing-choices {
+    width:100%;
+    display:grid;
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    gap:5px;
+  }
+  .timing-choices button {
+    min-width:0;
+    min-height:35px;
+    padding:7px 5px;
+    font-size:9.5px;
+  }
+  .timing-range-btn { grid-column:auto; order:2; }
+  .timing-sheet-wrap { max-height:330px; margin-top:9px; }
+}
+
+@media (max-width:430px) {
+  .mini-pad {
+    flex-basis:var(--mobile-pad-size);
+    width:var(--mobile-pad-size);
+    max-width:none;
+    height:var(--mobile-pad-size);
+    aspect-ratio:1;
+    font-size:17px;
+  }
+  .mini-pads.show-pitch-names .mini-pad {
+    flex-basis:var(--mobile-pad-size);
+    width:var(--mobile-pad-size);
+    max-width:none;
+    height:calc(var(--mobile-pad-size) + 8px);
+    aspect-ratio:auto;
+  }
+  .sequence-label-tools .text-tool-btn { font-size:9px; }
+  .timing-range-btn { grid-column:auto; order:2; }
+}
+
+
+/* v60: mobile/tablet header polish + performance-safe layout */
+@media (max-width:900px) {
+  .topbar { gap:10px; }
+  .song-heading { flex:1 1 auto; min-width:0; }
+  .song-heading h2 { font-size:20px; }
+  .top-actions { flex:none; gap:6px; }
+  .top-actions .soft-btn { font-size:0; width:40px; height:40px; padding:0; }
+  .top-actions #editBtn::after { content:"✎"; font-size:18px; }
+  .top-actions #settingsBtn::after { content:"⚙"; font-size:18px; }
+  .donate-btn { width:40px; height:40px; min-height:40px; padding:0; border-radius:10px; }
+  .donate-btn span { display:none; }
+  .donate-btn img { width:23px; height:23px; }
+}
+
+@media (max-width:520px) {
+  .main-panel { padding:12px; }
+  .topbar {
+    display:grid;
+    grid-template-columns:40px minmax(0,1fr) 40px;
+    align-items:start;
+    gap:8px 8px;
+    min-height:0;
+    margin-bottom:12px;
+  }
+  .menu-btn { grid-column:1; grid-row:1; align-self:start; justify-self:start; }
+  .menu-btn { position:relative; z-index:2; }
+  .song-heading {
+    grid-column:1 / -1;
+    grid-row:1;
+    width:100%;
+    min-width:0;
+    text-align:center;
+    justify-self:center;
+    pointer-events:none;
+  }
+  .song-heading .eyebrow { margin-bottom:4px; font-size:12px; text-align:center; }
+  .song-title-row { flex-wrap:wrap; gap:5px 6px; justify-content:center; }
+  .song-heading h2 {
+    flex:1 0 100%;
+    width:100%;
+    font-size:22px;
+    line-height:1.08;
+    text-align:center;
+    padding:0 46px;
+  }
+  .song-title-row .difficulty-badge,
+  .song-title-row .collection-badge { font-size:16px; padding:5px 9px; }
+  .top-actions {
+    grid-column:1 / -1;
+    grid-row:2;
+    width:100%;
+    margin-left:0;
+    justify-content:center;
+  }
+  .mobile-view-toggle { display:grid; place-items:center; width:40px; height:40px; color:#c4b5fd; }
+  .trainer-toolbar { padding:12px; gap:0; }
+  .toolbar-controls { width:100%; flex-direction:row; }
+  .toolbar-controls > .segmented { width:100%; }
+  .toolbar-controls > .segmented .segment {
+    flex:1 1 auto;
+    min-width:0;
+    min-height:44px;
+    padding:10px 6px;
+    font-size:16px;
+  }
+  .display-control,
+  .trainer-toolbar > .stat-pills { display:none; }
+  .stage-overlay.top-left {
+    left:10px;
+    right:10px;
+    top:10px;
+    display:grid;
+    grid-template-columns:.82fr 1fr 1fr 1.34fr;
+    gap:4px;
+  }
+  .stage-overlay.top-left > #totalNotesLabel { display:none; }
+  .mobile-stage-stats { display:contents; }
+  .stage-overlay.top-left span {
+    min-width:0;
+    padding:8px 2px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:3px;
+    color:var(--muted);
+    font-size:16px;
+    line-height:1;
+    letter-spacing:-.025em;
+    white-space:nowrap;
+    text-align:center;
+  }
+  .mobile-stage-pill b { color:var(--text); }
+}
+
+
+/* v68: one readable mobile and tablet type scale across Song Builder and trainer controls */
+@media (max-width:900px) {
+  .dialog label,
+  .field-label-row,
+  .label-hint { font-size:15px; }
+  .dialog input,
+  .dialog select { font-size:16px; }
+  .song-storage-notice,
+  .live-compose p,
+  .helper-copy { font-size:14px; line-height:1.5; }
+  .live-compose h3 { font-size:17px; }
+  .sequence-label-row > label { font-size:14px; }
+  .sequence-label-tools .expressive-timing-switch .compact-switch-label { font-size:15px; }
+  .sequence-label-tools .text-tool-btn { font-size:14px; font-weight:700; }
+  .onoff-state { font-size:10px; }
+  .timing-editor-head h3 { font-size:16px; }
+  .timing-editor-head p { font-size:14px; line-height:1.5; }
+  .timing-choices button { min-height:40px; font-size:13px; }
+  .timing-sheet-label { font-size:11px; }
+
+  .focus-mode-btn { min-height:42px; padding:9px 12px; font-size:14px; }
+  .focus-mode-btn span { font-size:17px; }
+  .progress-wrap { font-size:13px; }
+  .mini-loop-btn { min-height:38px; padding:8px 10px; font-size:14px; }
+  .ab-loop-status { font-size:14px; line-height:1.45; }
+  .speed-row { font-size:15px; }
+  .speed-row select { min-height:40px; font-size:16px; }
+  .mic-toggle { font-size:14px; }
+  .mic-status,
+  .speed-row p { font-size:14px; line-height:1.45; }
+}
+
+@media (max-width:430px) {
+  .editor-guide-btn::after,
+  .editor-guide-btn .info-badge { font-size:14px; }
+}
+
+/* v69: keep supporting text readable and consistent throughout the mobile and tablet app */
+@media (max-width:900px) {
+  .search-wrap { font-size:13px; }
+  .song-group-heading { font-size:12px; }
+  .song-group-heading small,
+  .library-btn em { font-size:11px; }
+  .song-item span,
+  .community-empty { font-size:14px; line-height:1.45; }
+  .soft-btn.compact,
+  .text-btn { font-size:14px; }
+  .dialog-actions button,
+  .community-info-btn,
+  .library-community-action { font-size:15px; }
+
+  .eyebrow { font-size:12px; }
+  .segment,
+  .view-segment { font-size:15px; }
+  .display-control > span { font-size:12px; }
+  .stage-overlay span { font-size:15px; }
+  .hit-label { font-size:12px; }
+  .keyboard-hint { font-size:13px; }
+  .next-note-card span,
+  .next-note-card small { font-size:14px; }
+
+  .high-drum-option-title,
+  .companion-tuning-head strong,
+  .tuning-head-title { font-size:15px; }
+  .high-drum-availability,
+  .companion-tuning-head span,
+  .tuning-row > span { font-size:14px; line-height:1.45; }
+  .clear-pitch-btn,
+  .reset-pitch-btn { font-size:14px; }
+  .pitch-custom-badge { font-size:12px; }
+
+  .pitch-info p,
+  .pitch-band em,
+  .note-guide-head span,
+  .pitch-info .note-guide-caption,
+  .jianpu-tip-text small,
+  .jianpu-tip-note,
+  .jianpu-octave-chip small,
+  .jianpu-copy-block p,
+  .jianpu-key-card small,
+  .jianpu-key-card span { font-size:14px; }
+  .note-guide-head strong,
+  .jianpu-tip-card > strong,
+  .jianpu-tip-text b,
+  .jianpu-copy-block h4,
+  .jianpu-key-card strong { font-size:15px; }
+  .note-guide table,
+  .jianpu-copy-block li { font-size:14px; }
+  .note-guide thead th { font-size:13px; }
+
+  .catalog-update-banner p,
+  .community-dialog-copy p,
+  .community-dialog-copy li,
+  .community-selected-song,
+  .community-upload-status,
+  .community-upload-status strong { font-size:14px; }
+  .tour-card-head span,
+  .tour-skip-btn,
+  .tour-preference { font-size:14px; }
+  .tour-card > p { font-size:15px; }
+  .toast { font-size:14px; }
+
+  .tuner-reading > span,
+  .tuner-scale { font-size:12px; }
+  .tuner-reading small { font-size:14px; }
+  .dialog .timing-lyric:placeholder-shown { font-size:12px; }
+
+  .result-stats span,
+  .result-recommendation-label { font-size:12px; }
+  .result-mistakes { font-size:14px; }
+  .result-recommended-copy strong { font-size:15px; }
+  .result-recommended-copy .difficulty-badge { font-size:12px; }
+  .result-recommended-copy small { font-size:13px; }
+
+  .library-tab { font-size:14px; }
+  .library-tab span { font-size:11px; }
+  .library-search { font-size:13px; }
+  .library-community-banner strong { font-size:15px; }
+  .library-community-banner span { font-size:14px; }
+  .album-title-row strong { font-size:15px; }
+  .album-title-row .difficulty-badge { font-size:12px; }
+  .album-copy small { font-size:13px; }
+  .album-source { font-size:12px; }
+  .library-empty span { font-size:14px; }
+
+  .my-drum-intro { font-size:15px; }
+  .my-drum-badges span { font-size:13px; }
+  .my-drum-section-head strong { font-size:15px; }
+  .my-drum-section-head span { font-size:13px; }
+  .my-drum-note-chip {
+    min-height:42px;
+    grid-template-columns:10px 28px minmax(0,1fr);
+  }
+  .my-drum-note-chip > strong { font-size:16px; }
+  .my-drum-note-chip > span { font-size:13px; }
+  .my-companion-note strong { font-size:15px; }
+  .my-companion-note small { font-size:12px; }
+  .my-companion-centre { font-size:11px; }
+  .my-drum-backup-note { font-size:14px; }
+  .mini-pad-note-name { font-size:12px; }
+}
+
+/* v70: use the compact trainer layout on phones and tablets */
+@media (max-width:900px) {
+  .top-actions .soft-btn.compact {
+    width:40px;
+    height:40px;
+    padding:0;
+    font-size:0;
+  }
+  .mobile-view-toggle {
+    display:grid;
+    place-items:center;
+    width:40px;
+    height:40px;
+    color:#c4b5fd;
+  }
+
+  .trainer-toolbar { padding:12px 14px; gap:0; }
+  .toolbar-controls {
+    width:100%;
+    align-items:center;
+    justify-content:center;
+    flex-direction:row;
+  }
+  .toolbar-controls > .segmented { width:100%; }
+  .toolbar-controls > .segmented .segment {
+    flex:1 1 auto;
+    min-width:0;
+    min-height:44px;
+    padding:10px 8px;
+    font-size:15px;
+  }
+  .display-control,
+  .trainer-toolbar > .stat-pills { display:none; }
+
+  .stage-overlay.top-left {
+    left:14px;
+    right:14px;
+    top:12px;
+    display:grid;
+    grid-template-columns:.82fr 1fr 1fr 1.34fr;
+    gap:7px;
+  }
+  .stage-overlay.top-left > #totalNotesLabel { display:none; }
+  .mobile-stage-stats { display:contents; }
+  .stage-overlay.top-left span {
+    min-width:0;
+    padding:8px 5px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:3px;
+    color:var(--muted);
+    font-size:15px;
+    line-height:1;
+    letter-spacing:-.02em;
+    white-space:nowrap;
+    text-align:center;
+  }
+  .mobile-stage-pill b { color:var(--text); }
+
+  .focus-mode-btn {
+    min-height:42px;
+    padding:9px 12px;
+    font-size:14px;
+  }
+  .focus-mode-btn span { font-size:17px; }
+  .mini-loop-btn {
+    min-height:38px;
+    padding:8px 10px;
+    font-size:14px;
+  }
+  .ab-loop-status { font-size:14px; line-height:1.45; }
+  .progress-wrap { font-size:13px; }
+}
+
+@media (max-width:520px) {
+  .topbar {
+    row-gap:12px;
+    margin-bottom:16px;
+  }
+  .song-title-row { gap:8px 7px; }
+  .top-actions { margin-top:3px; }
+  .stage-overlay.top-left {
+    left:10px;
+    right:10px;
+    top:10px;
+    gap:4px;
+  }
+  .stage-overlay.top-left span {
+    padding:8px 2px;
+    font-size:16px;
+    letter-spacing:-.025em;
+  }
+}
+
+/* v71: one readable type scale for desktop screens too */
+@media (min-width:901px) {
+  .search-wrap { font-size:13px; }
+  .song-group-heading { font-size:12px; }
+  .song-group-heading small,
+  .library-btn em { font-size:11px; }
+  .song-item span,
+  .community-empty,
+  .community-info-btn { font-size:13px; line-height:1.45; }
+
+  .eyebrow { font-size:12px; }
+  .segment,
+  .view-segment { font-size:14px; }
+  .stat-pills .stat-pill,
+  .stage-overlay span { font-size:13px; }
+  .hit-label { font-size:11px; }
+  .progress-wrap { font-size:13px; }
+  .speed-row,
+  .speed-row select,
+  .mic-toggle,
+  .mic-status,
+  .speed-row p { font-size:14px; }
+  .keyboard-hint { font-size:12px; }
+  .next-note-card span,
+  .next-note-card small { font-size:13px; }
+
+  .mini-loop-btn {
+    min-height:36px;
+    padding:8px 11px;
+    font-size:13px;
+  }
+  .ab-loop-status { font-size:13px; line-height:1.45; }
+  .focus-mode-btn {
+    min-height:40px;
+    padding:9px 12px;
+    font-size:13px;
+  }
+  .focus-mode-btn span { font-size:17px; }
+
+  .dialog label,
+  .field-label-row { font-size:14px; }
+  .label-hint { font-size:13px; }
+  .editor-guide-btn { font-size:13px; }
+  .song-storage-notice,
+  .helper-copy,
+  .live-compose p { font-size:13px; line-height:1.5; }
+  .compact-switch-label { font-size:13px; }
+  .mini-pad-caption { font-size:12px; }
+  .mini-pad-note-name { font-size:11px; }
+  .sequence-label-row > label,
+  .sequence-label-tools .text-tool-btn { font-size:13px; }
+
+  .timing-editor-head h3 { font-size:15px; }
+  .timing-editor-head p { font-size:13px; line-height:1.5; }
+  .timing-choices button {
+    min-height:38px;
+    padding:9px 11px;
+    font-size:13px;
+  }
+  .timing-sheet-label { font-size:12px; }
+
+  .high-drum-option-title,
+  .companion-tuning-head strong,
+  .tuning-head-title { font-size:15px; }
+  .high-drum-availability,
+  .companion-tuning-head span,
+  .tuning-row > span { font-size:13px; line-height:1.45; }
+  .clear-pitch-btn,
+  .reset-pitch-btn { font-size:13px; }
+  .pitch-custom-badge { font-size:12px; }
+
+  .pitch-info p,
+  .pitch-band em,
+  .note-guide-head span,
+  .pitch-info .note-guide-caption,
+  .jianpu-tip-text small,
+  .jianpu-tip-note,
+  .jianpu-octave-chip small,
+  .jianpu-copy-block p,
+  .jianpu-key-card small,
+  .jianpu-key-card span { font-size:13px; }
+  .note-guide-head strong,
+  .jianpu-tip-card > strong,
+  .jianpu-tip-text b,
+  .jianpu-copy-block h4,
+  .jianpu-key-card strong { font-size:15px; }
+  .note-guide table,
+  .jianpu-copy-block li { font-size:13px; }
+  .note-guide thead th { font-size:12px; }
+
+  .catalog-update-banner p,
+  .community-dialog-copy p,
+  .community-dialog-copy li,
+  .community-selected-song,
+  .community-upload-status,
+  .community-upload-status strong { font-size:13px; }
+  .tour-card-head span,
+  .tour-skip-btn,
+  .tour-preference { font-size:13px; }
+  .tour-card > p { font-size:14px; }
+  .toast { font-size:14px; }
+
+  .tuner-reading > span,
+  .tuner-scale { font-size:11px; }
+  .tuner-reading small { font-size:13px; }
+  .dialog .timing-lyric:placeholder-shown { font-size:11px; }
+
+  .result-stats span,
+  .result-recommendation-label { font-size:11px; }
+  .result-mistakes { font-size:13px; }
+  .result-recommended-copy strong { font-size:15px; }
+  .result-recommended-copy .difficulty-badge { font-size:11px; }
+  .result-recommended-copy small { font-size:13px; }
+
+  .library-tab { font-size:14px; }
+  .library-tab span { font-size:11px; }
+  .library-search { font-size:12px; }
+  .library-community-banner strong { font-size:15px; }
+  .library-community-banner span { font-size:13px; }
+  .album-title-row strong { font-size:15px; }
+  .album-title-row .difficulty-badge { font-size:11px; }
+  .album-copy small { font-size:13px; }
+  .album-source { font-size:11px; }
+  .library-empty span { font-size:13px; }
+
+  .my-drum-intro { font-size:14px; }
+  .my-drum-badges span { font-size:12px; }
+  .my-drum-section-head strong { font-size:15px; }
+  .my-drum-section-head span { font-size:12px; }
+  .my-drum-note-chip > strong { font-size:15px; }
+  .my-drum-note-chip > span { font-size:12px; }
+  .my-companion-note strong { font-size:14px; }
+  .my-companion-note small { font-size:11px; }
+  .my-companion-centre { font-size:10px; }
+  .my-drum-backup-note { font-size:13px; }
+}
+
+/* Song Builder has enough room on desktop for a full-size keyboard guide. */
+@media (min-width:1000px) {
+  #editorDialog { width:min(1080px,calc(100vw - 32px)); }
+  #sequenceInput,
+  .sequence-backdrop { padding-right:320px; }
+  .sequence-hints {
+    top:12px;
+    right:14px;
+    width:290px;
+    padding:12px 14px;
+    border-radius:12px;
+  }
+  .sequence-hints b {
+    margin-bottom:8px;
+    font-size:13px;
+    letter-spacing:.1em;
+  }
+  .sequence-hints b small { font-size:12px; }
+  .sequence-hints p {
+    grid-template-columns:52px minmax(0,1fr);
+    gap:8px;
+    margin-bottom:5px;
+    font-size:13px;
+    line-height:1.4;
+  }
+  .sequence-hints kbd {
+    min-width:19px;
+    padding:1px 5px;
+    font-size:12px;
+    line-height:1.5;
+  }
+  #sequenceInput { min-height:260px; }
+  .sequence-workspace.timing-visible #sequenceInput {
+    min-height:260px;
+    height:260px;
+  }
+}
+
+/* On tablets and narrower desktops the range action follows all note lengths. */
+@media (max-width:1180px) {
+  .timing-range-btn { order:2; }
 }
