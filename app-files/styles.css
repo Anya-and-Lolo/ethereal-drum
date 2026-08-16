@@ -2400,3 +2400,14 @@ input[type="range"] { width:100%; accent-color:var(--accent); }
   font-weight:700;
   line-height:1.2;
 }
+
+/* v73: avoid live backdrop blur over the animated canvases on touch devices. The more
+   opaque fills preserve the same separation without forcing a full blur repaint whenever
+   a note or star moves behind a control. */
+@media (max-width:1180px), (pointer:coarse) {
+  .stage-overlay span,
+  .focus-mode-btn,
+  .tuner-panel { backdrop-filter:none; }
+  .stage-overlay span { background:rgba(10,14,25,.88); }
+  .focus-mode-btn { background:rgba(9,14,26,.9); }
+}

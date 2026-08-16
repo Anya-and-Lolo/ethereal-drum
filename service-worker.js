@@ -1,4 +1,4 @@
-const CACHE = 'ethereal-drum-trainer-v72-switch-layer-readme';
+const CACHE = 'ethereal-drum-trainer-v73-mobile-performance';
 const SHELL = [
   './',
   './index.html',

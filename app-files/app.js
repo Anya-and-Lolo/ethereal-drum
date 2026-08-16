@@ -650,7 +650,15 @@
     ambientId: 0,
     lastFrameAt: 0,
     lastVisualAt: 0,
+    lastUiAt: 0,
     lastAmbientAt: 0,
+    lastBackdropAt: 0,
+    lastCompanionUiAt: 0,
+    backdropMode: '',
+    performanceProfile: null,
+    stageDrumGeometryKey: '',
+    expectedPadSignature: '',
+    expectedPadAnchor: null,
     particlePhaseCache: new Map(),
     stageTonguePads: [],
     companionGeometryCache: null,
@@ -2028,13 +2036,54 @@
     if (els.mobileStreakPill) els.mobileStreakPill.dataset.tone = streakTone;
   }
 
+  // Keep musical timing independent from drawing cost. Phones use a deliberately lean
+  // canvas profile, tablets keep a little more detail, and desktop retains the full scene.
+  // The profile is refreshed by resizeCanvas, so these checks do not run inside every
+  // particle loop.
+  function performanceProfileFor(width) {
+    const coarsePointer = Boolean(window.matchMedia?.('(pointer: coarse)').matches);
+    if (width <= 600 && (coarsePointer || window.innerWidth <= 600)) {
+      return {
+        name: 'phone', dpr: 1, visualInterval: 34, uiInterval: 100,
+        backdropInterval: 100, ambientInterval: 66, stars: 52,
+        fallingParticles: 9, radialParticles: 12, companionParticles: 6,
+        particleBudget: 72, particleShadows: false
+      };
+    }
+    if (width <= 1100 || coarsePointer) {
+      return {
+        name: 'tablet', dpr: 1.25, visualInterval: 25, uiInterval: 80,
+        backdropInterval: 67, ambientInterval: 40, stars: 78,
+        fallingParticles: 15, radialParticles: 21, companionParticles: 9,
+        particleBudget: 126, particleShadows: false
+      };
+    }
+    return {
+      name: 'desktop', dpr: 2, visualInterval: 0, uiInterval: 33,
+      backdropInterval: 0, ambientInterval: 33, stars: 110,
+      fallingParticles: 27, radialParticles: 36, companionParticles: 18,
+      particleBudget: Infinity, particleShadows: true
+    };
+  }
+
+  function visualPerformanceProfile(width = els.noteCanvas?.clientWidth || window.innerWidth) {
+    return state.performanceProfile || performanceProfileFor(width);
+  }
+
+  function particleCountWithinBudget(maximum, visibleNotes, profile) {
+    if (!Number.isFinite(profile.particleBudget)) return maximum;
+    const budgeted = Math.floor(profile.particleBudget / Math.max(1, visibleNotes));
+    // Multiples of three preserve the three-strand trail. Six remains readable even in
+    // a dense passage while being far cheaper than the former 36 particles per note.
+    return Math.min(maximum, Math.max(6, Math.floor(budgeted / 3) * 3));
+  }
+
   function resizeCanvas() {
     const rect = els.noteCanvas.getBoundingClientRect();
-    // Two animated canvases at DPR 2 are expensive on phones/tablets. A 1.5 cap keeps
-    // the same CSS size and appearance while cutting the number of painted pixels by
-    // roughly 44%. Desktop remains at DPR 2.
-    const compactCanvas = rect.width <= 1100 || window.matchMedia?.('(pointer: coarse)').matches;
-    const dpr = Math.min(window.devicePixelRatio || 1, compactCanvas ? 1.5 : 2);
+    state.performanceProfile = performanceProfileFor(rect.width);
+    // A phone DPR of 1 cuts the two canvas buffers to 44% of their previous DPR-1.5
+    // pixel count. The CSS dimensions and all hit targets remain exactly the same.
+    const dpr = Math.min(window.devicePixelRatio || 1, state.performanceProfile.dpr);
     [els.noteCanvas, els.noteCanvasBack].forEach(canvas => {
       if (!canvas) return;
       canvas.width = Math.max(1, Math.round(rect.width * dpr));
@@ -2043,6 +2092,9 @@
     });
     state.companionGeometryCache = null;
     state.companionGuideGeometryKey = '';
+    state.stageDrumGeometryKey = '';
+    state.lastBackdropAt = 0;
+    state.backdropMode = '';
     buildStarField(rect.width, rect.height);
     renderFrame();
   }
@@ -2079,37 +2131,60 @@
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
     if (!width || !height) return;
-    const now = performance.now() / 1000;
+    const nowMs = performance.now();
+    const now = nowMs / 1000;
     const delta = Math.min(0.1, Math.max(0, now - (state.lastFrameAt || now)));
     state.lastFrameAt = now;
     ctx.clearRect(0, 0, width, height);
 
     const back = els.noteCanvasBack?.getContext('2d');
-    if (back) back.clearRect(0, 0, width, height);
-    updateHighDrumCue();
+    const profile = visualPerformanceProfile(width);
+    if (!state.playing || !state.lastCompanionUiAt || nowMs - state.lastCompanionUiAt >= profile.uiInterval) {
+      state.lastCompanionUiAt = nowMs;
+      updateHighDrumCue();
+    }
 
     let activeIndices;
     if (state.visualMode === 'radial') {
-      if (back) renderRadialBackdrop(back, width, height, now, delta);
+      const refreshBackdrop = back && (
+        state.backdropMode !== 'radial'
+        || !state.lastBackdropAt
+        || !profile.backdropInterval
+        || nowMs - state.lastBackdropAt >= profile.backdropInterval
+      );
+      if (refreshBackdrop) {
+        const backdropDelta = Math.min(0.12, Math.max(0, (nowMs - (state.lastBackdropAt || nowMs)) / 1000));
+        back.clearRect(0, 0, width, height);
+        renderRadialBackdrop(back, width, height, now, backdropDelta || delta);
+        state.lastBackdropAt = nowMs;
+        state.backdropMode = 'radial';
+      }
       activeIndices = state.mode === 'tuner' ? new Set() : renderRadialFrame(ctx, width, height);
     } else {
+      if (back && state.backdropMode !== 'lanes') back.clearRect(0, 0, width, height);
+      state.backdropMode = 'lanes';
       activeIndices = state.mode === 'tuner' ? new Set() : renderLaneFrame(ctx, width, height);
     }
 
     const playbackPads = state.stageTonguePads.length
       ? state.stageTonguePads
       : [...els.stageDrumWrap.querySelectorAll('.tongue'), ...els.highDrumWrap.querySelectorAll('.tongue')];
-    playbackPads.forEach(pad => {
-      const idx = Number(pad.dataset.noteIndex);
-      if (pad.classList.contains('high-tongue')) {
-        const slot = Number(pad.dataset.highSlot);
-        const label = highDrumNotes()[slot]?.label;
-        const routesToCompanion = highDrumSlotForLabel(label) >= 0;
-        pad.classList.toggle('expected', routesToCompanion && activeIndices.has(idx));
-      } else {
-        pad.classList.toggle('expected', activeIndices.has(idx));
-      }
-    });
+    const expectedSignature = [...activeIndices].sort((a, b) => a - b).join(',');
+    if (expectedSignature !== state.expectedPadSignature || playbackPads[0] !== state.expectedPadAnchor) {
+      state.expectedPadSignature = expectedSignature;
+      state.expectedPadAnchor = playbackPads[0] || null;
+      playbackPads.forEach(pad => {
+        const idx = Number(pad.dataset.noteIndex);
+        if (pad.classList.contains('high-tongue')) {
+          const slot = Number(pad.dataset.highSlot);
+          const label = highDrumNotes()[slot]?.label;
+          const routesToCompanion = highDrumSlotForLabel(label) >= 0;
+          pad.classList.toggle('expected', routesToCompanion && activeIndices.has(idx));
+        } else {
+          pad.classList.toggle('expected', activeIndices.has(idx));
+        }
+      });
+    }
   }
 
   function updateHighDrumCue() {
@@ -2215,11 +2290,10 @@
     });
   }
 
-  const STAR_COUNT = 110;
-
   function buildStarField(width, height) {
     if (!width || !height) return;
-    state.stars = Array.from({ length: STAR_COUNT }, () => {
+    const starCount = visualPerformanceProfile(width).stars;
+    state.stars = Array.from({ length: starCount }, () => {
       const depth = Math.random() ** 1.4;
       return {
         x: Math.random() * width,
@@ -2413,6 +2487,9 @@
 
     const activeIndices = new Set();
     const { start, end } = noteWindow(state.currentTime - 0.55, state.currentTime + previewSeconds);
+    const profile = visualPerformanceProfile(width);
+    const visibleNotes = Math.max(1, end - start);
+    const particleCount = particleCountWithinBudget(profile.fallingParticles, visibleNotes, profile);
     for (let index = start; index < end; index += 1) {
       const note = state.parsedNotes[index];
       const dt = note.time - state.currentTime;
@@ -2433,7 +2510,12 @@
       const color = noteColor(note.noteIndex);
       const alpha = dt < -0.2 ? Math.max(0, 1 + dt * 2) : 1;
       const noteIsMoving = state.playing && !state.countInActive && state.mode !== 'wait';
-      if (noteIsMoving) drawFallingNoteParticles(ctx, note, x, y, radius, noteHeight, color, alpha);
+      if (noteIsMoving) {
+        drawFallingNoteParticles(
+          ctx, note, x, y, radius, noteHeight, color, alpha,
+          particleCount, profile.particleShadows
+        );
+      }
       ctx.globalAlpha = alpha;
       ctx.fillStyle = color;
       ctx.shadowColor = color;
@@ -2476,7 +2558,8 @@
     if (state.visualMode !== 'radial') return;
     // Wait-for-note mode has no playback clock, so the ambient loop draws those frames too.
     const drivenByPlayback = state.playing && state.mode !== 'wait';
-    if (!drivenByPlayback && !document.hidden && now - state.lastAmbientAt > 33) {
+    const ambientInterval = visualPerformanceProfile().ambientInterval;
+    if (!drivenByPlayback && !document.hidden && now - state.lastAmbientAt > ambientInterval) {
       state.lastAmbientAt = now;
       renderFrame();
     }
@@ -2616,7 +2699,7 @@
     ctx.restore();
   }
 
-  function drawFallingNoteParticles(ctx, note, x, y, radius, noteHeight, color, alpha) {
+  function drawFallingNoteParticles(ctx, note, x, y, radius, noteHeight, color, alpha, particleCount, particleShadows) {
     const { r, g, b } = hexToRgb(color);
     const lightR = Math.round(r + (255 - r) * 0.38);
     const lightG = Math.round(g + (255 - g) * 0.38);
@@ -2625,7 +2708,9 @@
     const notePhase = particlePhase(note.id);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    for (let particle = 0; particle < 27; particle++) {
+    ctx.shadowColor = `rgba(${r},${g},${b},.9)`;
+    if (!particleShadows) ctx.shadowBlur = 0;
+    for (let particle = 0; particle < particleCount; particle++) {
       const template = PARTICLE_TEMPLATE[particle];
       const stream = template.stream;
       const streamIndex = template.streamIndex;
@@ -2646,8 +2731,7 @@
       ctx.fillStyle = stream === 0 && streamIndex % 3 === 0
         ? '#ffffff'
         : `rgb(${lightR},${lightG},${lightB})`;
-      ctx.shadowColor = `rgba(${r},${g},${b},.9)`;
-      ctx.shadowBlur = 5 + life * 7;
+      if (particleShadows) ctx.shadowBlur = 5 + life * 7;
       ctx.beginPath();
       ctx.arc(particleX, particleY, particleSize, 0, Math.PI * 2);
       ctx.fill();
@@ -2659,15 +2743,19 @@
     const previewSeconds = 4.2 / state.speed;
     const { drumSize, scale, cx, cy } = radialGeometry(width, height);
     const compactNotes = width <= 760 || window.matchMedia?.('(pointer: coarse)').matches;
-    if (els.stageDrumWrap) {
+    const geometryKey = `${cx.toFixed(2)}:${cy.toFixed(2)}:${scale.toFixed(4)}`;
+    if (els.stageDrumWrap && state.stageDrumGeometryKey !== geometryKey) {
       els.stageDrumWrap.style.left = `${cx}px`;
       els.stageDrumWrap.style.top = `${cy}px`;
       els.stageDrumWrap.style.setProperty('--stage-scale', scale.toFixed(4));
+      state.stageDrumGeometryKey = geometryKey;
     }
 
     const started = playbackStarted();
     const activeIndices = new Set();
     const { start, end } = noteWindow(state.currentTime - 0.48, state.currentTime + previewSeconds);
+    const profile = visualPerformanceProfile(width);
+    const visibleNotes = Math.max(1, end - start);
     for (let index = start; index < end; index += 1) {
       const note = state.parsedNotes[index];
       const dt = note.time - state.currentTime;
@@ -2776,9 +2864,12 @@
         const notePhase = particlePhase(note.id);
         const perpendicularX = -trailDy;
         const perpendicularY = trailDx;
-        const particleCount = target.high ? 18 : 36;
+        const maximumParticles = target.high ? profile.companionParticles : profile.radialParticles;
+        const particleCount = particleCountWithinBudget(maximumParticles, visibleNotes, profile);
         drawCtx.save();
         drawCtx.globalCompositeOperation = 'lighter';
+        drawCtx.shadowColor = target.high ? 'rgba(103,232,249,.9)' : `rgba(${r},${g},${b},.9)`;
+        if (!profile.particleShadows) drawCtx.shadowBlur = 0;
         for (let particle = 0; particle < particleCount; particle++) {
           const template = PARTICLE_TEMPLATE[particle];
           const stream = template.stream;
@@ -2807,8 +2898,7 @@
             : stream === 0 && streamIndex % 4 === 0
               ? `rgb(${highlightR},${highlightG},${highlightB})`
               : `rgb(${lightR},${lightG},${lightB})`;
-          drawCtx.shadowColor = target.high ? 'rgba(103,232,249,.9)' : `rgba(${r},${g},${b},.9)`;
-          drawCtx.shadowBlur = target.high ? 4 + life * 5 : 5 + life * 7;
+          if (profile.particleShadows) drawCtx.shadowBlur = target.high ? 4 + life * 5 : 5 + life * 7;
           drawCtx.beginPath();
           drawCtx.arc(particleX, particleY, particleSize, 0, Math.PI * 2);
           drawCtx.fill();
@@ -3620,6 +3710,9 @@
     state.lastScheduledIndex = state.parsedNotes.findIndex(n => n.time >= state.currentTime - .02) - 1;
     state.lastMetronomeBeat = Math.floor(state.currentTime / state.secondsPerBeat) - 1;
     state.lastVisualAt = 0;
+    state.lastUiAt = 0;
+    state.lastBackdropAt = 0;
+    state.lastCompanionUiAt = 0;
     updateTransportUI();
     cancelAnimationFrame(state.animationId);
     state.animationId = requestAnimationFrame(tick);
@@ -3630,13 +3723,15 @@
     state.currentTime = Math.min(state.duration, ((now - state.playbackStartedAt) / 1000) * state.speed);
     scheduleDueAudio();
     if (state.metronome) scheduleMetronome();
-    // Audio stays checked every animation frame, while the expensive canvases can run at
-    // ~50fps on touch layouts. The motion remains visually smooth and frees GPU/CPU time.
-    const compactVisuals = els.noteCanvas.clientWidth <= 1100 || window.matchMedia?.('(pointer: coarse)').matches;
-    const visualInterval = compactVisuals ? 20 : 0;
-    if (!visualInterval || !state.lastVisualAt || now - state.lastVisualAt >= visualInterval) {
-      state.lastVisualAt = now;
+    // Audio stays checked every animation frame. DOM labels, the foreground notes and the
+    // animated backdrop each have their own budget, so a dense song cannot delay sound.
+    const profile = visualPerformanceProfile();
+    if (!state.lastUiAt || now - state.lastUiAt >= profile.uiInterval) {
+      state.lastUiAt = now;
       updatePracticeUI();
+    }
+    if (!profile.visualInterval || !state.lastVisualAt || now - state.lastVisualAt >= profile.visualInterval) {
+      state.lastVisualAt = now;
       renderFrame();
     }
     if (state.sectionLoop && Number.isFinite(state.loopB) && state.currentTime >= state.loopB - .002) {
