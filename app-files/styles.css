@@ -2433,3 +2433,10 @@ input[type="range"] { width:100%; accent-color:var(--accent); }
   }
   .companion-guides line { filter:none; }
 }
+
+/* When the runtime monitor lowers desktop detail, remove two costly live filters too.
+   Static drum shadows remain, so the instrument does not lose its depth or halo. */
+html[data-particle-quality="half"] .stage-drum-wrap,
+html[data-particle-quality="none"] .stage-drum-wrap,
+html[data-particle-quality="half"] .companion-guides line,
+html[data-particle-quality="none"] .companion-guides line { filter:none; }

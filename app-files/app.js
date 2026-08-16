@@ -2094,11 +2094,11 @@
       };
     }
     return {
-      name: 'desktop', dpr: 2, visualInterval: 0, uiInterval: 33,
-      backdropInterval: 0, ambientInterval: 33, stars: 110,
+      name: 'desktop', dpr: 1.75, visualInterval: 0, uiInterval: 33,
+      backdropInterval: 33, ambientInterval: 40, stars: 110,
       particleQualityCap: 'full',
       fallingParticles: 27, radialParticles: 36, companionParticles: 18,
-      particleBudget: Infinity, particleShadows: true
+      particleBudget: 432, particleShadows: true
     };
   }
 
@@ -2166,7 +2166,11 @@
     if (slowRatio >= 0.24 || drawingIsHeavy) {
       // First reduce decorative particles. If the profile is already particle-free,
       // halve only the background animation rate; note motion and audio remain unchanged.
-      if (!downgradeParticleQuality() && state.backgroundRateScale < 2) {
+      const reducedParticles = downgradeParticleQuality();
+      if (reducedParticles && profile.name === 'desktop' && state.backgroundRateScale < 2) {
+        state.backgroundRateScale = 2;
+        state.lastBackdropAt = 0;
+      } else if (!reducedParticles && state.backgroundRateScale < 2) {
         state.backgroundRateScale = 2;
         state.lastBackdropAt = 0;
         resetVisualPerformanceMonitor(frameFinishedAt);
@@ -3225,15 +3229,46 @@
     );
   }
 
-  async function ensureAudio() {
-    if (!state.audioContext) {
+  function initialiseAudioGraph() {
+    if (!state.audioContext || state.audioContext.state === 'closed') {
       state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
       state.masterGain = state.audioContext.createGain();
       state.masterGain.gain.value = document.hidden ? 0 : 1;
       state.masterGain.connect(state.audioContext.destination);
     }
-    if (state.audioContext.state === 'suspended') await state.audioContext.resume();
     return state.audioContext;
+  }
+
+  // Mobile browsers sometimes require a real source to start inside the original touch
+  // gesture. A one-sample silent buffer unlocks the output without producing a click.
+  function primeAudioFromGesture() {
+    const context = initialiseAudioGraph();
+    try {
+      const source = context.createBufferSource();
+      source.buffer = context.createBuffer(1, 1, Math.max(8000, context.sampleRate || 44100));
+      source.connect(state.masterGain || context.destination);
+      source.start(0);
+    } catch {}
+    if (context.state !== 'running') context.resume().catch(() => {});
+    return context;
+  }
+
+  async function ensureAudio(timeoutMs = 500) {
+    const context = initialiseAudioGraph();
+    if (context.state !== 'running') {
+      await new Promise((resolve, reject) => {
+        const timer = window.setTimeout(() => reject(new Error('Audio start timed out')), timeoutMs);
+        Promise.resolve(context.resume()).then(() => {
+          window.clearTimeout(timer);
+          resolve();
+        }, error => {
+          window.clearTimeout(timer);
+          reject(error);
+        });
+      });
+    }
+    if (context.state !== 'running') throw new Error('Audio is not available yet');
+    return context;
   }
 
   function setAudioMuted(muted) {
@@ -3244,7 +3279,10 @@
   }
 
   async function playMidi(midi, referencePitch = 440, accent = false) {
+    const requestedAt = performance.now();
     const context = await ensureAudio();
+    // Never release an old mobile sound request after a delayed audio unlock.
+    if (performance.now() - requestedAt > 180) return false;
     const frequency = Number(referencePitch) * Math.pow(2, (Number(midi) - 69) / 12);
     const now = context.currentTime;
     const master = context.createGain();
@@ -3273,6 +3311,7 @@
     osc2.start(now);
     osc1.stop(now + 1.4);
     osc2.stop(now + 1.4);
+    return true;
   }
 
   async function playTone(noteIndex, accent = false) {
@@ -3281,7 +3320,9 @@
   }
 
   async function playClick(accent) {
+    const requestedAt = performance.now();
     const context = await ensureAudio();
+    if (performance.now() - requestedAt > 180) return false;
     const osc = context.createOscillator();
     const gain = context.createGain();
     osc.type = 'square';
@@ -3291,6 +3332,7 @@
     osc.connect(gain).connect(state.masterGain || context.destination);
     osc.start();
     osc.stop(context.currentTime + .05);
+    return true;
   }
 
   function flashPad(noteIndex, className = 'active', duration = 190, noteLabel = null) {
@@ -3307,7 +3349,10 @@
   }
 
   function handleUserNote(noteIndex, options = {}) {
-    if (options.source !== 'microphone') playTone(noteIndex, true).catch(() => {});
+    if (options.source !== 'microphone') {
+      primeAudioFromGesture();
+      playTone(noteIndex, true).catch(() => {});
+    }
     flashPad(noteIndex, 'active');
     if (!state.playing && state.mode !== 'wait') return;
 
@@ -3797,7 +3842,7 @@
     if (!id || !state.songs.some(song => song.id===id)) return;
     if (els.resultDialog?.open) els.resultDialog.close();
     selectSong(id);
-    togglePlayback().catch(()=>{});
+    togglePlayback().catch(reportPlaybackStartError);
   }
 
   function showSessionResults() {
@@ -3837,7 +3882,7 @@
   function replayFromResults() {
     if (els.resultDialog?.open) els.resultDialog.close();
     restartSong();
-    togglePlayback().catch(() => {});
+    togglePlayback().catch(reportPlaybackStartError);
   }
 
   function selectNextSongFromResults() {
@@ -3873,7 +3918,12 @@
     updateTransportUI();
     updateABLoopUI();
     showToast(`Practising missed section ${formatTime(start)} – ${formatTime(end)}.`, 'success');
-    togglePlayback().catch(() => {});
+    togglePlayback().catch(reportPlaybackStartError);
+  }
+
+  function reportPlaybackStartError(error) {
+    console.warn('Playback could not start:', error);
+    showToast('Sound was blocked. Tap Play again to enable it.', 'warning');
   }
 
   async function togglePlayback() {
@@ -3885,6 +3935,7 @@
       pausePlayback();
       return;
     }
+    primeAudioFromGesture();
     await ensureAudio();
     if (state.sectionLoop && Number.isFinite(state.loopA) && Number.isFinite(state.loopB) && state.currentTime >= state.loopB - .02) {
       seekToTime(state.loopA, { clearSectionHits: true });
@@ -5551,7 +5602,7 @@
     if (event.target.matches('input, textarea, select, button') || event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.code === 'Space') {
       event.preventDefault();
-      togglePlayback();
+      togglePlayback().catch(reportPlaybackStartError);
       return;
     }
     const mappedIndex = KEY_NOTE_MAP[event.key.toLowerCase()];
@@ -5881,7 +5932,7 @@
     els.exportInstrumentFromSettingsBtn?.addEventListener('click', exportInstrumentSettings);
     els.importInstrumentBtn?.addEventListener('click', () => els.importInstrumentFile?.click());
     els.importInstrumentFile?.addEventListener('change', () => els.importInstrumentFile.files[0] && importInstrumentSettings(els.importInstrumentFile.files[0]));
-    els.playBtn.addEventListener('click', togglePlayback);
+    els.playBtn.addEventListener('click', () => togglePlayback().catch(reportPlaybackStartError));
     els.loopBtn.addEventListener('click', toggleLoop);
     els.setABtn?.addEventListener('click', () => setLoopPoint('A'));
     els.setBBtn?.addEventListener('click', () => setLoopPoint('B'));

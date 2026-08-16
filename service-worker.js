@@ -1,4 +1,4 @@
-const CACHE = 'ethereal-drum-trainer-v76-performance-pass';
+const CACHE = 'ethereal-drum-trainer-v77-audio-desktop-performance';
 const SHELL = [
   './',
   './index.html',
