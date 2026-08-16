@@ -16,6 +16,7 @@
   const COMMUNITY_UPLOAD_URL = String(window.ETHEREAL_COMMUNITY_UPLOAD_URL || '').trim();
   const COMMUNITY_STATUS_CALLBACK = 'etherealCommunityUploadStatus';
   const NOTE_COLORS = ['#a78bfa', '#5eead4', '#fbbf24', '#fb7185', '#60a5fa', '#f472b6', '#34d399', '#f97316', '#c084fc', '#22d3ee', '#eab308', '#a3e635', '#fda4af', '#67e8f9', '#bef264'];
+  const PARTICLE_QUALITY_ORDER = ['none', 'half', 'full'];
 
   const SCALE_INTERVALS = {
     major: [0, 2, 4, 5, 7, 9, 11],
@@ -257,6 +258,26 @@
   function hexToRgb(hex) {
     const clean = normaliseColor(hex).slice(1);
     return { r: parseInt(clean.slice(0, 2), 16), g: parseInt(clean.slice(2, 4), 16), b: parseInt(clean.slice(4, 6), 16) };
+  }
+
+  // Colour mixing used to be recalculated for every visible note on every frame. The
+  // palette and custom colours change rarely, so cache all derived shades by hex value.
+  const renderColorDataCache = new Map();
+  function renderColorData(hex) {
+    const color = normaliseColor(hex);
+    if (renderColorDataCache.has(color)) return renderColorDataCache.get(color);
+    const { r, g, b } = hexToRgb(color);
+    const mix = amount => ({
+      r: Math.round(r + (255 - r) * amount),
+      g: Math.round(g + (255 - g) * amount),
+      b: Math.round(b + (255 - b) * amount)
+    });
+    const highlight = mix(0.56);
+    const light = mix(0.3);
+    const trail = mix(0.38);
+    const data = { r, g, b, highlight, light, trail };
+    renderColorDataCache.set(color, data);
+    return data;
   }
 
   function noteInkColor(hex) {
@@ -656,6 +677,13 @@
     lastCompanionUiAt: 0,
     backdropMode: '',
     performanceProfile: null,
+    particleQuality: '',
+    particleProfileName: '',
+    visualMonitorStartedAt: 0,
+    visualMonitorSamples: 0,
+    visualMonitorSlowSamples: 0,
+    visualMonitorCostAverage: 0,
+    visualMonitorLastFrameAt: 0,
     stageDrumGeometryKey: '',
     expectedPadSignature: '',
     expectedPadAnchor: null,
@@ -2042,25 +2070,30 @@
   // particle loop.
   function performanceProfileFor(width) {
     const coarsePointer = Boolean(window.matchMedia?.('(pointer: coarse)').matches);
-    if (width <= 600 && (coarsePointer || window.innerWidth <= 600)) {
+    const viewportShortEdge = Math.min(window.innerWidth || width, window.innerHeight || width);
+    const phoneLayout = width <= 600 || (coarsePointer && viewportShortEdge <= 600);
+    if (phoneLayout) {
       return {
         name: 'phone', dpr: 1, visualInterval: 34, uiInterval: 100,
         backdropInterval: 100, ambientInterval: 66, stars: 52,
-        fallingParticles: 9, radialParticles: 12, companionParticles: 6,
-        particleBudget: 72, particleShadows: false
+        particleQualityCap: 'none', fallingParticles: 27,
+        radialParticles: 36, companionParticles: 18,
+        particleBudget: 0, particleShadows: false
       };
     }
     if (width <= 1100 || coarsePointer) {
       return {
         name: 'tablet', dpr: 1.25, visualInterval: 25, uiInterval: 80,
         backdropInterval: 67, ambientInterval: 40, stars: 78,
-        fallingParticles: 15, radialParticles: 21, companionParticles: 9,
-        particleBudget: 126, particleShadows: false
+        particleQualityCap: 'half', fallingParticles: 27,
+        radialParticles: 36, companionParticles: 18,
+        particleBudget: 144, particleShadows: false
       };
     }
     return {
       name: 'desktop', dpr: 2, visualInterval: 0, uiInterval: 33,
       backdropInterval: 0, ambientInterval: 33, stars: 110,
+      particleQualityCap: 'full',
       fallingParticles: 27, radialParticles: 36, companionParticles: 18,
       particleBudget: Infinity, particleShadows: true
     };
@@ -2070,17 +2103,83 @@
     return state.performanceProfile || performanceProfileFor(width);
   }
 
+  function particleQualityIndex(quality) {
+    return Math.max(0, PARTICLE_QUALITY_ORDER.indexOf(quality));
+  }
+
+  function setParticleQuality(quality) {
+    state.particleQuality = PARTICLE_QUALITY_ORDER.includes(quality) ? quality : 'none';
+    document.documentElement.dataset.particleQuality = state.particleQuality;
+  }
+
+  function resetVisualPerformanceMonitor(now = performance.now()) {
+    state.visualMonitorStartedAt = now;
+    state.visualMonitorSamples = 0;
+    state.visualMonitorSlowSamples = 0;
+    state.visualMonitorCostAverage = 0;
+    state.visualMonitorLastFrameAt = 0;
+  }
+
+  function configureParticleQuality(profile, force = false) {
+    if (!force && state.particleProfileName === profile.name && state.particleQuality) return;
+    state.particleProfileName = profile.name;
+    setParticleQuality(profile.particleQualityCap);
+    resetVisualPerformanceMonitor();
+  }
+
+  function downgradeParticleQuality() {
+    const current = particleQualityIndex(state.particleQuality);
+    if (current <= 0) return false;
+    setParticleQuality(PARTICLE_QUALITY_ORDER[current - 1]);
+    resetVisualPerformanceMonitor();
+    return true;
+  }
+
+  // Measure actual foreground drawing pressure rather than guessing from a device name.
+  // Quality only moves downward during a session, which avoids particles appearing and
+  // disappearing repeatedly in a difficult passage. Audio scheduling is outside this
+  // monitor and continues on every animation frame.
+  function monitorVisualPerformance(frameStartedAt, frameFinishedAt, profile) {
+    if (state.particleQuality === 'none') return;
+    const targetInterval = profile.visualInterval || 16.7;
+    const renderCost = Math.max(0, frameFinishedAt - frameStartedAt);
+    const frameGap = state.visualMonitorLastFrameAt
+      ? frameStartedAt - state.visualMonitorLastFrameAt
+      : targetInterval;
+    state.visualMonitorLastFrameAt = frameStartedAt;
+    state.visualMonitorSamples += 1;
+    state.visualMonitorCostAverage += (renderCost - state.visualMonitorCostAverage) * 0.08;
+
+    // A 30 Hz display should not be mistaken for a slow desktop. A gap must exceed more
+    // than two target intervals, or the canvas call itself must consume most of a frame.
+    if (renderCost > targetInterval * 0.62 || frameGap > targetInterval * 2.1) {
+      state.visualMonitorSlowSamples += 1;
+    }
+
+    const elapsed = frameFinishedAt - state.visualMonitorStartedAt;
+    if (elapsed < 2400 || state.visualMonitorSamples < 48) return;
+    const slowRatio = state.visualMonitorSlowSamples / state.visualMonitorSamples;
+    const drawingIsHeavy = state.visualMonitorCostAverage > targetInterval * 0.52;
+    if (slowRatio >= 0.24 || drawingIsHeavy) downgradeParticleQuality();
+    else resetVisualPerformanceMonitor(frameFinishedAt);
+  }
+
   function particleCountWithinBudget(maximum, visibleNotes, profile) {
-    if (!Number.isFinite(profile.particleBudget)) return maximum;
+    const quality = state.particleQuality || profile.particleQualityCap;
+    if (quality === 'none') return 0;
+    const multiplier = quality === 'half' ? 0.5 : 1;
+    const qualityMaximum = Math.max(3, Math.floor((maximum * multiplier) / 3) * 3);
+    if (!Number.isFinite(profile.particleBudget)) return qualityMaximum;
     const budgeted = Math.floor(profile.particleBudget / Math.max(1, visibleNotes));
     // Multiples of three preserve the three-strand trail. Six remains readable even in
     // a dense passage while being far cheaper than the former 36 particles per note.
-    return Math.min(maximum, Math.max(6, Math.floor(budgeted / 3) * 3));
+    return Math.min(qualityMaximum, Math.max(Math.min(6, qualityMaximum), Math.floor(budgeted / 3) * 3));
   }
 
   function resizeCanvas() {
     const rect = els.noteCanvas.getBoundingClientRect();
     state.performanceProfile = performanceProfileFor(rect.width);
+    configureParticleQuality(state.performanceProfile);
     // A phone DPR of 1 cuts the two canvas buffers to 44% of their previous DPR-1.5
     // pixel count. The CSS dimensions and all hit targets remain exactly the same.
     const dpr = Math.min(window.devicePixelRatio || 1, state.performanceProfile.dpr);
@@ -2490,6 +2589,7 @@
     const profile = visualPerformanceProfile(width);
     const visibleNotes = Math.max(1, end - start);
     const particleCount = particleCountWithinBudget(profile.fallingParticles, visibleNotes, profile);
+    const particleClock = particleCount ? performance.now() / 1000 : 0;
     for (let index = start; index < end; index += 1) {
       const note = state.parsedNotes[index];
       const dt = note.time - state.currentTime;
@@ -2510,10 +2610,10 @@
       const color = noteColor(note.noteIndex);
       const alpha = dt < -0.2 ? Math.max(0, 1 + dt * 2) : 1;
       const noteIsMoving = state.playing && !state.countInActive && state.mode !== 'wait';
-      if (noteIsMoving) {
+      if (noteIsMoving && particleCount) {
         drawFallingNoteParticles(
           ctx, note, x, y, radius, noteHeight, color, alpha,
-          particleCount, profile.particleShadows
+          particleCount, profile.particleShadows, particleClock
         );
       }
       ctx.globalAlpha = alpha;
@@ -2699,12 +2799,8 @@
     ctx.restore();
   }
 
-  function drawFallingNoteParticles(ctx, note, x, y, radius, noteHeight, color, alpha, particleCount, particleShadows) {
-    const { r, g, b } = hexToRgb(color);
-    const lightR = Math.round(r + (255 - r) * 0.38);
-    const lightG = Math.round(g + (255 - g) * 0.38);
-    const lightB = Math.round(b + (255 - b) * 0.38);
-    const clock = performance.now() / 1000;
+  function drawFallingNoteParticles(ctx, note, x, y, radius, noteHeight, color, alpha, particleCount, particleShadows, clock) {
+    const { r, g, b, trail } = renderColorData(color);
     const notePhase = particlePhase(note.id);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
@@ -2730,7 +2826,7 @@
       ctx.globalAlpha = alpha * (0.14 + life * 0.72) * twinkle;
       ctx.fillStyle = stream === 0 && streamIndex % 3 === 0
         ? '#ffffff'
-        : `rgb(${lightR},${lightG},${lightB})`;
+        : `rgb(${trail.r},${trail.g},${trail.b})`;
       if (particleShadows) ctx.shadowBlur = 5 + life * 7;
       ctx.beginPath();
       ctx.arc(particleX, particleY, particleSize, 0, Math.PI * 2);
@@ -2756,6 +2852,7 @@
     const { start, end } = noteWindow(state.currentTime - 0.48, state.currentTime + previewSeconds);
     const profile = visualPerformanceProfile(width);
     const visibleNotes = Math.max(1, end - start);
+    const particleClock = state.particleQuality === 'none' ? 0 : performance.now() / 1000;
     for (let index = start; index < end; index += 1) {
       const note = state.parsedNotes[index];
       const dt = note.time - state.currentTime;
@@ -2829,13 +2926,13 @@
       }
 
       const color = noteColor(note.noteIndex);
-      const { r, g, b } = hexToRgb(color);
-      const highlightR = Math.round(r + (255 - r) * 0.56);
-      const highlightG = Math.round(g + (255 - g) * 0.56);
-      const highlightB = Math.round(b + (255 - b) * 0.56);
-      const lightR = Math.round(r + (255 - r) * 0.3);
-      const lightG = Math.round(g + (255 - g) * 0.3);
-      const lightB = Math.round(b + (255 - b) * 0.3);
+      const { r, g, b, highlight, light } = renderColorData(color);
+      const highlightR = highlight.r;
+      const highlightG = highlight.g;
+      const highlightB = highlight.b;
+      const lightR = light.r;
+      const lightG = light.g;
+      const lightB = light.b;
       const travelProgress = Math.max(0, Math.min(1, 1 - dt / previewSeconds));
       const growth = (compactNotes ? 0.72 : 0.58)
         + Math.pow(travelProgress, 0.72) * (compactNotes ? 0.48 : 0.54);
@@ -2856,16 +2953,15 @@
       const capsuleH = (target.high ? companionGem : mainCapsuleH) * growth * (1 + approach * 0.06);
       const angle = target.high ? 0 : Math.atan2(target.dy, target.dx);
       const noteIsMoving = state.playing && !state.countInActive && state.mode !== 'wait';
+      const maximumParticles = target.high ? profile.companionParticles : profile.radialParticles;
+      const particleCount = particleCountWithinBudget(maximumParticles, visibleNotes, profile);
 
-      if (noteIsMoving) {
+      if (noteIsMoving && particleCount) {
         // Companion trails are intentionally shorter and calmer. The diamond shape plus
         // the cool halo makes them distinct without replacing each tongue's note colour.
-        const particleClock = performance.now() / 1000;
         const notePhase = particlePhase(note.id);
         const perpendicularX = -trailDy;
         const perpendicularY = trailDx;
-        const maximumParticles = target.high ? profile.companionParticles : profile.radialParticles;
-        const particleCount = particleCountWithinBudget(maximumParticles, visibleNotes, profile);
         drawCtx.save();
         drawCtx.globalCompositeOperation = 'lighter';
         drawCtx.shadowColor = target.high ? 'rgba(103,232,249,.9)' : `rgba(${r},${g},${b},.9)`;
@@ -3706,13 +3802,15 @@
 
   function startPlaybackClock() {
     state.playing = true;
-    state.playbackStartedAt = performance.now() - (state.currentTime / state.speed) * 1000;
+    const playbackNow = performance.now();
+    state.playbackStartedAt = playbackNow - (state.currentTime / state.speed) * 1000;
     state.lastScheduledIndex = state.parsedNotes.findIndex(n => n.time >= state.currentTime - .02) - 1;
     state.lastMetronomeBeat = Math.floor(state.currentTime / state.secondsPerBeat) - 1;
     state.lastVisualAt = 0;
     state.lastUiAt = 0;
     state.lastBackdropAt = 0;
     state.lastCompanionUiAt = 0;
+    resetVisualPerformanceMonitor(playbackNow);
     updateTransportUI();
     cancelAnimationFrame(state.animationId);
     state.animationId = requestAnimationFrame(tick);
@@ -3732,7 +3830,9 @@
     }
     if (!profile.visualInterval || !state.lastVisualAt || now - state.lastVisualAt >= profile.visualInterval) {
       state.lastVisualAt = now;
+      const renderStartedAt = performance.now();
       renderFrame();
+      monitorVisualPerformance(renderStartedAt, performance.now(), profile);
     }
     if (state.sectionLoop && Number.isFinite(state.loopB) && state.currentTime >= state.loopB - .002) {
       restartSectionLoopCycle(now);

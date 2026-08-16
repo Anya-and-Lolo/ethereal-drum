@@ -2411,3 +2411,6 @@ input[type="range"] { width:100%; accent-color:var(--accent); }
   .stage-overlay span { background:rgba(10,14,25,.88); }
   .focus-mode-btn { background:rgba(9,14,26,.9); }
 }
+
+/* v75: isolate canvas repaints from the controls and surrounding page. */
+.note-stage { contain:paint; }
