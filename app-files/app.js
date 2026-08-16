@@ -264,6 +264,8 @@
   // palette and custom colours change rarely, so cache all derived shades by hex value.
   const renderColorDataCache = new Map();
   const noteSpriteCache = new Map();
+  const soundBufferCache = new Map();
+  let soundCacheGeneration = 0;
   function renderColorData(hex) {
     const color = normaliseColor(hex);
     if (renderColorDataCache.has(color)) return renderColorDataCache.get(color);
@@ -709,6 +711,7 @@
 
   const $ = (id) => document.getElementById(id);
   const els = {
+    startupLoader: $('startupLoader'), startupLoaderStatus: $('startupLoaderStatus'), startupLoaderFill: $('startupLoaderFill'), startupLoaderCount: $('startupLoaderCount'),
     sidebar: $('sidebar'), sidebarClose: $('sidebarClose'), sidebarScrim: $('sidebarScrim'), menuBtn: $('menuBtn'), songList: $('songList'), songSearch: $('songSearch'),
     newSongBtn: $('newSongBtn'), importBtn: $('importBtn'), importFile: $('importFile'), libraryBtn: $('libraryBtn'), libraryCountBadge: $('libraryCountBadge'), exportBtn: $('exportBtn'), deleteBtn: $('deleteBtn'), restoreDemosBtn: $('restoreDemosBtn'),
     currentTitle: $('currentTitle'), currentCollection: $('currentCollection'), currentDifficulty: $('currentDifficulty'), editBtn: $('editBtn'), settingsBtn: $('settingsBtn'), helpTourBtn: $('helpTourBtn'), mobileViewToggleBtn: $('mobileViewToggleBtn'), instrumentTitle: $('instrumentTitle'),
@@ -1828,6 +1831,7 @@
       }
       state.instrument = normaliseInstrument(data.instrument);
       saveInstrument();
+      preCacheInstrumentSounds().catch(error => console.warn('Sound cache refresh failed:', error));
       renderInstrument();
       selectSong(state.selectedId);
       renderMyDrum();
@@ -3229,6 +3233,81 @@
     );
   }
 
+  function soundBufferKey(midi, referencePitch = REFERENCE_PITCH) {
+    return `${Number(midi)}:${Number(referencePitch).toFixed(3)}`;
+  }
+
+  async function renderSoundBuffer(midi, referencePitch = REFERENCE_PITCH) {
+    const OfflineContext = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!OfflineContext) return null;
+    const sampleRate = 44100;
+    const duration = 1.4;
+    const context = new OfflineContext(1, Math.ceil(sampleRate * duration), sampleRate);
+    const frequency = Number(referencePitch) * Math.pow(2, (Number(midi) - 69) / 12);
+    const master = context.createGain();
+    const osc1 = context.createOscillator();
+    const osc2 = context.createOscillator();
+    const filter = context.createBiquadFilter();
+
+    osc1.type = 'sine';
+    osc2.type = 'triangle';
+    osc1.frequency.setValueAtTime(frequency, 0);
+    osc2.frequency.setValueAtTime(frequency * 2.003, 0);
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(Math.min(3500, frequency * 7), 0);
+    filter.Q.value = .8;
+    master.gain.setValueAtTime(.0001, 0);
+    master.gain.exponentialRampToValueAtTime(.24, .008);
+    master.gain.exponentialRampToValueAtTime(.0001, 1.35);
+    osc1.connect(filter);
+    osc2.connect(filter);
+    filter.connect(master);
+    master.connect(context.destination);
+    osc1.start(0);
+    osc2.start(0);
+    osc1.stop(duration);
+    osc2.stop(duration);
+    return context.startRendering();
+  }
+
+  function soundsForCurrentInstrument() {
+    const notes = [...(state.instrument?.notes || [])];
+    if (state.instrument?.count === 15) notes.push(...configuredCompanionNotes());
+    const referencePitch = state.instrument?.referencePitch || REFERENCE_PITCH;
+    const unique = new Map();
+    notes.forEach(note => {
+      const midi = Number(note?.midi);
+      if (Number.isFinite(midi)) unique.set(soundBufferKey(midi, referencePitch), { midi, referencePitch });
+    });
+    return [...unique.values()];
+  }
+
+  async function preCacheInstrumentSounds(onProgress = null) {
+    const generation = ++soundCacheGeneration;
+    const sounds = soundsForCurrentInstrument();
+    soundBufferCache.clear();
+    onProgress?.(0, sounds.length);
+    if (!(window.OfflineAudioContext || window.webkitOfflineAudioContext)) {
+      return { cached: 0, total: sounds.length, supported: false };
+    }
+
+    let cached = 0;
+    for (const sound of sounds) {
+      if (generation !== soundCacheGeneration) return { cached, total: sounds.length, cancelled: true };
+      try {
+        const buffer = await renderSoundBuffer(sound.midi, sound.referencePitch);
+        if (buffer && generation === soundCacheGeneration) {
+          soundBufferCache.set(soundBufferKey(sound.midi, sound.referencePitch), buffer);
+          cached += 1;
+        }
+      } catch (error) {
+        console.warn(`Could not cache MIDI note ${sound.midi}:`, error);
+      }
+      onProgress?.(cached, sounds.length);
+    }
+    return { cached, total: sounds.length, supported: true };
+  }
+
   function initialiseAudioGraph() {
     if (!state.audioContext || state.audioContext.state === 'closed') {
       state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -3283,8 +3362,21 @@
     const context = await ensureAudio();
     // Never release an old mobile sound request after a delayed audio unlock.
     if (performance.now() - requestedAt > 180) return false;
-    const frequency = Number(referencePitch) * Math.pow(2, (Number(midi) - 69) / 12);
     const now = context.currentTime;
+    const cachedBuffer = soundBufferCache.get(soundBufferKey(midi, referencePitch));
+    if (cachedBuffer) {
+      const source = context.createBufferSource();
+      const level = context.createGain();
+      source.buffer = cachedBuffer;
+      level.gain.setValueAtTime(accent ? 4 / 3 : 1, now);
+      source.connect(level).connect(state.masterGain || context.destination);
+      source.start(now);
+      return true;
+    }
+
+    // Fallback for browsers without OfflineAudioContext, or while a newly edited tuning
+    // is still being prepared in the background.
+    const frequency = Number(referencePitch) * Math.pow(2, (Number(midi) - 69) / 12);
     const master = context.createGain();
     const osc1 = context.createOscillator();
     const osc2 = context.createOscillator();
@@ -5591,6 +5683,7 @@
       notes: labels.map((label, i) => ({ label, midi: midis[i], color: colors[i] }))
     };
     saveInstrument();
+    preCacheInstrumentSounds().catch(error => console.warn('Sound cache refresh failed:', error));
     els.settingsDialog.close();
     renderInstrument();
     selectSong(state.selectedId);
@@ -6213,13 +6306,52 @@
     }
   }
 
-  function init() {
+  function updateStartupProgress(cached, total) {
+    const complete = total ? Math.round((cached / total) * 100) : 100;
+    if (els.startupLoaderFill) els.startupLoaderFill.style.width = `${Math.max(3, complete)}%`;
+    if (els.startupLoaderStatus) els.startupLoaderStatus.textContent = 'Pre-caching note sounds';
+    if (els.startupLoaderCount) {
+      els.startupLoaderCount.textContent = total ? `${cached} of ${total} notes ready` : 'Sounds ready';
+    }
+  }
+
+  function revealLoadedApp() {
+    document.body.classList.remove('app-loading');
+    els.startupLoader?.classList.add('done');
+    window.setTimeout(() => {
+      if (els.startupLoader) els.startupLoader.hidden = true;
+    }, 280);
+  }
+
+  async function init() {
     loadData();
     bindEvents();
     renderInstrument();
     updateMicUI();
     renderSongList();
     selectSong(state.selectedId);
+    const cacheTask = preCacheInstrumentSounds(updateStartupProgress).catch(error => {
+      console.warn('Sound pre-cache was unavailable:', error);
+      return { cached: 0, total: soundsForCurrentInstrument().length, supported: false };
+    });
+    // Avoid a flash on fast computers, but never hold the application for more than five
+    // seconds. A very slow device keeps the buffers already completed and stops there.
+    let startupLimitTimer = 0;
+    const startupLimit = new Promise(resolve => {
+      startupLimitTimer = window.setTimeout(() => {
+        soundCacheGeneration += 1;
+        resolve({ timedOut: true });
+      }, 5000);
+    });
+    await Promise.race([
+      Promise.all([cacheTask, new Promise(resolve => window.setTimeout(resolve, 320))]),
+      startupLimit
+    ]);
+    window.clearTimeout(startupLimitTimer);
+    if (els.startupLoaderStatus) els.startupLoaderStatus.textContent = 'Ready to play';
+    if (els.startupLoaderFill) els.startupLoaderFill.style.width = '100%';
+    if (els.startupLoaderCount) els.startupLoaderCount.textContent = 'Sound cache ready';
+    revealLoadedApp();
     startDemoCatalogPolling();
     maybeStartWalkthrough();
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {
@@ -6239,5 +6371,8 @@
     }
   }
 
-  init();
+  init().catch(error => {
+    console.error('Trainer startup failed:', error);
+    revealLoadedApp();
+  });
 })();

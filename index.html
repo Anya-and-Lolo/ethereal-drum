@@ -9,7 +9,17 @@
   <link rel="manifest" href="app-files/manifest.webmanifest" />
   <link rel="stylesheet" href="app-files/styles.css" />
 </head>
-<body>
+<body class="app-loading">
+  <div class="startup-loader" id="startupLoader" role="status" aria-live="polite" aria-label="Preparing Ethereal Drum Trainer">
+    <div class="startup-loader-card">
+      <div class="startup-loader-mark" aria-hidden="true"><i></i><i></i><i></i></div>
+      <p class="startup-loader-brand">ETHEREAL DRUM</p>
+      <h1>Preparing your drum</h1>
+      <p class="startup-loader-status" id="startupLoaderStatus">Loading your instrument</p>
+      <div class="startup-loader-track" aria-hidden="true"><i id="startupLoaderFill"></i></div>
+      <span class="startup-loader-count" id="startupLoaderCount">Starting...</span>
+    </div>
+  </div>
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
       <div class="brand-row">
