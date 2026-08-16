@@ -263,6 +263,7 @@
   // Colour mixing used to be recalculated for every visible note on every frame. The
   // palette and custom colours change rarely, so cache all derived shades by hex value.
   const renderColorDataCache = new Map();
+  const noteSpriteCache = new Map();
   function renderColorData(hex) {
     const color = normaliseColor(hex);
     if (renderColorDataCache.has(color)) return renderColorDataCache.get(color);
@@ -275,15 +276,14 @@
     const highlight = mix(0.56);
     const light = mix(0.3);
     const trail = mix(0.38);
-    const data = { r, g, b, highlight, light, trail };
+    const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    const data = { r, g, b, highlight, light, trail, ink: luminance > 0.58 ? '#101521' : '#ffffff' };
     renderColorDataCache.set(color, data);
     return data;
   }
 
   function noteInkColor(hex) {
-    const { r, g, b } = hexToRgb(hex);
-    const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-    return luminance > 0.58 ? '#101521' : '#ffffff';
+    return renderColorData(hex).ink;
   }
 
   function setNoteColorVars(element, color) {
@@ -677,6 +677,7 @@
     lastCompanionUiAt: 0,
     backdropMode: '',
     performanceProfile: null,
+    backgroundRateScale: 1,
     particleQuality: '',
     particleProfileName: '',
     visualMonitorStartedAt: 0,
@@ -684,6 +685,8 @@
     visualMonitorSlowSamples: 0,
     visualMonitorCostAverage: 0,
     visualMonitorLastFrameAt: 0,
+    staticGuideCanvas: null,
+    staticGuideKey: '',
     stageDrumGeometryKey: '',
     expectedPadSignature: '',
     expectedPadAnchor: null,
@@ -722,7 +725,7 @@
     myDrumDialog: $('myDrumDialog'), myDrumTitle: $('myDrumTitle'), myDrumBadges: $('myDrumBadges'), myDrumPreview: $('myDrumPreview'), myDrumNoteCount: $('myDrumNoteCount'), myDrumNoteList: $('myDrumNoteList'), myDrumCompanion: $('myDrumCompanion'), myDrumCompanionPreview: $('myDrumCompanionPreview'), exportInstrumentBtn: $('exportInstrumentBtn'), exportInstrumentFromSettingsBtn: $('exportInstrumentFromSettingsBtn'), importInstrumentBtn: $('importInstrumentBtn'), importInstrumentFile: $('importInstrumentFile'), editInstrumentBtn: $('editInstrumentBtn'),
     settingsDialog: $('settingsDialog'), settingsForm: $('settingsForm'), instrumentKeySelect: $('instrumentKeySelect'), scaleTypeSelect: $('scaleTypeSelect'), noteCountSelect: $('noteCountSelect'), rootOctaveSelect: $('rootOctaveSelect'), highDrumOption: $('highDrumOption'), highDrumAvailability: $('highDrumAvailability'), highDrumToggle: $('highDrumToggle'), highDrumAlwaysToggle: $('highDrumAlwaysToggle'), companionTuningSection: $('companionTuningSection'), companionTuningGrid: $('companionTuningGrid'), colourPopover: $('colourPopover'), pitchInfoBtn: $('pitchInfoBtn'), pitchInfo: $('pitchInfo'), noteGuideBody: $('noteGuideBody'), noteGuideOctave: $('noteGuideOctave'), tuningGrid: $('tuningGrid'), saveSettingsBtn: $('saveSettingsBtn'),
     toast: $('toast'), catalogUpdateBanner: $('catalogUpdateBanner'), catalogUpdateRefreshBtn: $('catalogUpdateRefreshBtn'), catalogUpdateLaterBtn: $('catalogUpdateLaterBtn'), micBtn: $('micBtn'), micStatus: $('micStatus'),
-    tourOverlay: $('tourOverlay'), tourFocusRing: $('tourFocusRing'), tourCard: $('tourCard'), tourProgress: $('tourProgress'), tourTitle: $('tourTitle'), tourText: $('tourText'), tourSkipBtn: $('tourSkipBtn'), tourBackBtn: $('tourBackBtn'), tourNextBtn: $('tourNextBtn'), tourDontShowAgain: $('tourDontShowAgain'),
+    tourOverlay: $('tourOverlay'), tourShadeTop: $('tourShadeTop'), tourShadeRight: $('tourShadeRight'), tourShadeBottom: $('tourShadeBottom'), tourShadeLeft: $('tourShadeLeft'), tourFocusRing: $('tourFocusRing'), tourCard: $('tourCard'), tourProgress: $('tourProgress'), tourTitle: $('tourTitle'), tourText: $('tourText'), tourSkipBtn: $('tourSkipBtn'), tourBackBtn: $('tourBackBtn'), tourNextBtn: $('tourNextBtn'), tourDontShowAgain: $('tourDontShowAgain'),
     tunerPanel: $('tunerPanel'), tunerLabel: $('tunerLabel'), tunerNoteName: $('tunerNoteName'), tunerCents: $('tunerCents'), tunerMeter: $('tunerMeter'), tunerNeedle: $('tunerNeedle'),
     resultDialog: $('resultDialog'), resultTitle: $('resultTitle'), resultSummary: $('resultSummary'), resultStats: $('resultStats'), resultHitValue: $('resultHitValue'), resultAccuracyValue: $('resultAccuracyValue'), resultStreakValue: $('resultStreakValue'), resultMistakes: $('resultMistakes'), resultRecommendation: $('resultRecommendation'), resultRecommendedBtn: $('resultRecommendedBtn'), resultReplayBtn: $('resultReplayBtn'), practiceMistakesBtn: $('practiceMistakesBtn'), resultNextBtn: $('resultNextBtn')
   };
@@ -2123,6 +2126,7 @@
   function configureParticleQuality(profile, force = false) {
     if (!force && state.particleProfileName === profile.name && state.particleQuality) return;
     state.particleProfileName = profile.name;
+    state.backgroundRateScale = 1;
     setParticleQuality(profile.particleQualityCap);
     resetVisualPerformanceMonitor();
   }
@@ -2140,7 +2144,6 @@
   // disappearing repeatedly in a difficult passage. Audio scheduling is outside this
   // monitor and continues on every animation frame.
   function monitorVisualPerformance(frameStartedAt, frameFinishedAt, profile) {
-    if (state.particleQuality === 'none') return;
     const targetInterval = profile.visualInterval || 16.7;
     const renderCost = Math.max(0, frameFinishedAt - frameStartedAt);
     const frameGap = state.visualMonitorLastFrameAt
@@ -2160,8 +2163,26 @@
     if (elapsed < 2400 || state.visualMonitorSamples < 48) return;
     const slowRatio = state.visualMonitorSlowSamples / state.visualMonitorSamples;
     const drawingIsHeavy = state.visualMonitorCostAverage > targetInterval * 0.52;
-    if (slowRatio >= 0.24 || drawingIsHeavy) downgradeParticleQuality();
-    else resetVisualPerformanceMonitor(frameFinishedAt);
+    if (slowRatio >= 0.24 || drawingIsHeavy) {
+      // First reduce decorative particles. If the profile is already particle-free,
+      // halve only the background animation rate; note motion and audio remain unchanged.
+      if (!downgradeParticleQuality() && state.backgroundRateScale < 2) {
+        state.backgroundRateScale = 2;
+        state.lastBackdropAt = 0;
+        resetVisualPerformanceMonitor(frameFinishedAt);
+      } else if (state.backgroundRateScale >= 2) {
+        resetVisualPerformanceMonitor(frameFinishedAt);
+      }
+    } else resetVisualPerformanceMonitor(frameFinishedAt);
+  }
+
+  function effectiveBackdropInterval(profile) {
+    if (!profile.backdropInterval) return state.backgroundRateScale > 1 ? 33 : 0;
+    return profile.backdropInterval * state.backgroundRateScale;
+  }
+
+  function effectiveAmbientInterval(profile) {
+    return profile.ambientInterval * state.backgroundRateScale;
   }
 
   function particleCountWithinBudget(maximum, visibleNotes, profile) {
@@ -2178,7 +2199,11 @@
 
   function resizeCanvas() {
     const rect = els.noteCanvas.getBoundingClientRect();
+    const previousProfile = state.performanceProfile;
     state.performanceProfile = performanceProfileFor(rect.width);
+    if (!previousProfile || previousProfile.name !== state.performanceProfile.name || previousProfile.dpr !== state.performanceProfile.dpr) {
+      noteSpriteCache.clear();
+    }
     configureParticleQuality(state.performanceProfile);
     // A phone DPR of 1 cuts the two canvas buffers to 44% of their previous DPR-1.5
     // pixel count. The CSS dimensions and all hit targets remain exactly the same.
@@ -2194,6 +2219,8 @@
     state.stageDrumGeometryKey = '';
     state.lastBackdropAt = 0;
     state.backdropMode = '';
+    state.staticGuideCanvas = null;
+    state.staticGuideKey = '';
     buildStarField(rect.width, rect.height);
     renderFrame();
   }
@@ -2245,11 +2272,12 @@
 
     let activeIndices;
     if (state.visualMode === 'radial') {
+      const backdropInterval = effectiveBackdropInterval(profile);
       const refreshBackdrop = back && (
         state.backdropMode !== 'radial'
         || !state.lastBackdropAt
-        || !profile.backdropInterval
-        || nowMs - state.lastBackdropAt >= profile.backdropInterval
+        || !backdropInterval
+        || nowMs - state.lastBackdropAt >= backdropInterval
       );
       if (refreshBackdrop) {
         const backdropDelta = Math.min(0.12, Math.max(0, (nowMs - (state.lastBackdropAt || nowMs)) / 1000));
@@ -2413,17 +2441,33 @@
 
   function drawStars(ctx, width, height, now, delta) {
     if (!state.stars?.length) buildStarField(width, height);
+    const profile = visualPerformanceProfile(width);
+    const fixedPositions = profile.name === 'phone';
     const pace = (state.playing ? 1 : 0.32) * delta;
+    const bucketCount = 6;
+    const buckets = Array.from({ length: bucketCount }, () => []);
+    state.stars.forEach(star => {
+      if (!fixedPositions) {
+        const rate = 0.18 + star.depth * 1.05;
+        star.x = (star.x + PARALLAX.x * rate * star.wobble * pace + width) % width;
+        star.y = (star.y + PARALLAX.y * rate * pace + height) % height;
+      }
+      const twinkle = 0.5 + 0.5 * Math.sin(now * star.speed + star.phase);
+      const alpha = star.base * (0.3 + 0.7 * twinkle);
+      const bucket = Math.min(bucketCount - 1, Math.floor((alpha / 0.7) * bucketCount));
+      buckets[bucket].push(star);
+    });
+
     ctx.save();
     ctx.fillStyle = '#ffffff';
-    state.stars.forEach(star => {
-      const rate = 0.18 + star.depth * 1.05;
-      star.x = (star.x + PARALLAX.x * rate * star.wobble * pace + width) % width;
-      star.y = (star.y + PARALLAX.y * rate * pace + height) % height;
-      const twinkle = 0.5 + 0.5 * Math.sin(now * star.speed + star.phase);
-      ctx.globalAlpha = star.base * (0.3 + 0.7 * twinkle);
+    buckets.forEach((stars, bucket) => {
+      if (!stars.length) return;
+      ctx.globalAlpha = ((bucket + 0.5) / bucketCount) * 0.7;
       ctx.beginPath();
-      ctx.arc(star.x, star.y, star.r, 0, Math.PI * 2);
+      stars.forEach(star => {
+        ctx.moveTo(star.x + star.r, star.y);
+        ctx.arc(star.x, star.y, star.r, 0, Math.PI * 2);
+      });
       ctx.fill();
     });
     ctx.restore();
@@ -2525,35 +2569,67 @@
     return strengths;
   }
 
+  function drawRadialGuide(ctx, width, height, geometry, noteIndex, strength = 0, activeOverlay = false) {
+    const target = getPlacementTarget(getDrumPlacement(noteIndex), geometry.scale, geometry.cx, geometry.cy);
+    const edgeRadius = distanceToStageEdge(geometry.cx, geometry.cy, target.dx, target.dy, width, height, 12);
+    const startX = target.x + target.dx * 16 * geometry.scale;
+    const startY = target.y + target.dy * 16 * geometry.scale;
+    const edgeX = geometry.cx + target.dx * edgeRadius;
+    const edgeY = geometry.cy + target.dy * edgeRadius;
+    const lineGradient = ctx.createLinearGradient(startX, startY, edgeX, edgeY);
+    if (activeOverlay) {
+      lineGradient.addColorStop(0, `rgba(255,255,255,${(strength * 0.84).toFixed(3)})`);
+      lineGradient.addColorStop(0.24, `rgba(255,255,255,${(strength * 0.43).toFixed(3)})`);
+      lineGradient.addColorStop(0.62, `rgba(255,255,255,${(strength * 0.12).toFixed(3)})`);
+      lineGradient.addColorStop(1, `rgba(255,255,255,${(strength * 0.012).toFixed(3)})`);
+    } else {
+      lineGradient.addColorStop(0, 'rgba(255,255,255,.09)');
+      lineGradient.addColorStop(0.24, 'rgba(255,255,255,.065)');
+      lineGradient.addColorStop(0.62, 'rgba(255,255,255,.03)');
+      lineGradient.addColorStop(1, 'rgba(255,255,255,.006)');
+    }
+    ctx.strokeStyle = lineGradient;
+    ctx.lineWidth = activeOverlay ? 1 + strength * 1.25 : 1;
+    ctx.shadowColor = 'rgba(255,255,255,.9)';
+    ctx.shadowBlur = activeOverlay ? strength * 8 : 0;
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.lineTo(edgeX, edgeY);
+    ctx.stroke();
+  }
+
+  function staticGuideLayer(width, height, geometry) {
+    const profile = visualPerformanceProfile(width);
+    const density = Math.min(window.devicePixelRatio || 1, profile.dpr || 2);
+    const key = [width, height, geometry.drumSize, state.instrument.count, density].join(':');
+    if (state.staticGuideCanvas && state.staticGuideKey === key) return state.staticGuideCanvas;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width * density));
+    canvas.height = Math.max(1, Math.round(height * density));
+    const guideCtx = canvas.getContext('2d');
+    guideCtx.setTransform(density, 0, 0, density, 0, 0);
+    guideCtx.save();
+    state.instrument.notes.forEach((_note, noteIndex) => {
+      drawRadialGuide(guideCtx, width, height, geometry, noteIndex);
+    });
+    guideCtx.restore();
+    state.staticGuideCanvas = canvas;
+    state.staticGuideKey = key;
+    return canvas;
+  }
+
   // Everything that belongs behind the drum: stars, amoeba, halo, flight guide lines.
   function renderRadialBackdrop(ctx, width, height, now, delta) {
     drawStars(ctx, width, height, now, delta);
     const geometry = radialGeometry(width, height);
     drawAmoeba(ctx, geometry.cx, geometry.cy, geometry.drumSize, now);
     drawDrumHalo(ctx, geometry.cx, geometry.cy, geometry.drumSize, now);
+    const baseGuides = staticGuideLayer(width, height, geometry);
+    ctx.drawImage(baseGuides, 0, 0, baseGuides.width, baseGuides.height, 0, 0, width, height);
     const guideStrengths = radialGuideStrengths(4.2 / state.speed);
     ctx.save();
-    state.instrument.notes.forEach((note, i) => {
-      const strength = guideStrengths.get(i) || 0;
-      const target = getPlacementTarget(getDrumPlacement(i), geometry.scale, geometry.cx, geometry.cy);
-      const edgeRadius = distanceToStageEdge(geometry.cx, geometry.cy, target.dx, target.dy, width, height, 12);
-      const startX = target.x + target.dx * 16 * geometry.scale;
-      const startY = target.y + target.dy * 16 * geometry.scale;
-      const edgeX = geometry.cx + target.dx * edgeRadius;
-      const edgeY = geometry.cy + target.dy * edgeRadius;
-      const lineGradient = ctx.createLinearGradient(startX, startY, edgeX, edgeY);
-      lineGradient.addColorStop(0, `rgba(255,255,255,${(0.09 + strength * 0.84).toFixed(3)})`);
-      lineGradient.addColorStop(0.24, `rgba(255,255,255,${(0.065 + strength * 0.43).toFixed(3)})`);
-      lineGradient.addColorStop(0.62, `rgba(255,255,255,${(0.03 + strength * 0.12).toFixed(3)})`);
-      lineGradient.addColorStop(1, `rgba(255,255,255,${(0.006 + strength * 0.012).toFixed(3)})`);
-      ctx.strokeStyle = lineGradient;
-      ctx.lineWidth = 1 + strength * 1.25;
-      ctx.shadowColor = 'rgba(255,255,255,.9)';
-      ctx.shadowBlur = strength * 8;
-      ctx.beginPath();
-      ctx.moveTo(startX, startY);
-      ctx.lineTo(edgeX, edgeY);
-      ctx.stroke();
+    guideStrengths.forEach((strength, noteIndex) => {
+      if (strength > 0.001) drawRadialGuide(ctx, width, height, geometry, noteIndex, strength, true);
     });
     ctx.restore();
   }
@@ -2616,13 +2692,16 @@
           particleCount, profile.particleShadows, particleClock
         );
       }
+      const noteSprite = cachedNoteSprite(
+        'lane', color, radius * 2, noteHeight,
+        dt < .15 && dt > -.15 ? 24 : 10,
+        profile
+      );
+      ctx.save();
       ctx.globalAlpha = alpha;
-      ctx.fillStyle = color;
-      ctx.shadowColor = color;
-      ctx.shadowBlur = dt < .15 && dt > -.15 ? 24 : 10;
-      roundRect(ctx, x - radius, y - noteHeight / 2, radius * 2, noteHeight, noteHeight / 2);
-      ctx.fill();
-      ctx.shadowBlur = 0;
+      ctx.translate(x, y);
+      drawCachedNoteSprite(ctx, noteSprite);
+      ctx.restore();
       const labelSize = compactNotes
         ? Math.max(13, Math.min(18, width * .04 * growth))
         : laneW < 30 ? 10 : 13;
@@ -2658,7 +2737,8 @@
     if (state.visualMode !== 'radial') return;
     // Wait-for-note mode has no playback clock, so the ambient loop draws those frames too.
     const drivenByPlayback = state.playing && state.mode !== 'wait';
-    const ambientInterval = visualPerformanceProfile().ambientInterval;
+    const profile = visualPerformanceProfile();
+    const ambientInterval = effectiveAmbientInterval(profile);
     if (!drivenByPlayback && !document.hidden && now - state.lastAmbientAt > ambientInterval) {
       state.lastAmbientAt = now;
       renderFrame();
@@ -3019,24 +3099,14 @@
       drawCtx.globalAlpha = alpha;
       drawCtx.translate(x, y);
       drawCtx.rotate(angle);
-      // A pronounced jewel-like gradient that stays entirely within the note colour.
-      const noteGradient = drawCtx.createLinearGradient(-capsuleW * 0.42, -capsuleH * 0.45, capsuleW * 0.42, capsuleH * 0.45);
-      noteGradient.addColorStop(0, `rgb(${highlightR},${highlightG},${highlightB})`);
-      noteGradient.addColorStop(0.3, `rgb(${lightR},${lightG},${lightB})`);
-      noteGradient.addColorStop(0.62, `rgb(${r},${g},${b})`);
-      noteGradient.addColorStop(1, `rgb(${lightR},${lightG},${lightB})`);
-      drawCtx.fillStyle = noteGradient;
-      drawCtx.shadowColor = target.high ? 'rgba(103,232,249,.95)' : `rgba(${r},${g},${b},.9)`;
-      drawCtx.shadowBlur = target.high
+      const spriteBlur = target.high
         ? 8 + approach * 16
         : (10 + approach * 24) * Math.max(0.8, scale);
-      if (target.high) roundedDiamond(drawCtx, capsuleW, Math.max(6, capsuleW * .24));
-      else roundRect(drawCtx, -capsuleW / 2, -capsuleH / 2, capsuleW, capsuleH, capsuleH / 2);
-      drawCtx.fill();
-      drawCtx.shadowBlur = 0;
-      drawCtx.strokeStyle = target.high ? 'rgba(207,250,254,.76)' : 'rgba(255,255,255,.28)';
-      drawCtx.lineWidth = target.high ? 1.25 : 1;
-      drawCtx.stroke();
+      const noteSprite = cachedNoteSprite(
+        target.high ? 'high' : 'radial', color,
+        capsuleW, capsuleH, spriteBlur, profile
+      );
+      drawCachedNoteSprite(drawCtx, noteSprite);
       drawCtx.restore();
 
       drawCtx.save();
@@ -3095,6 +3165,64 @@
     ctx.quadraticCurveTo(-half, 0, -half + c, -c);
     ctx.quadraticCurveTo(-c, -half + c, 0, -half);
     ctx.closePath();
+  }
+
+  // Gradients and blurred shadows are expensive when recreated for every note on every
+  // frame. Cache a small set of two-pixel size buckets and draw them like sprites. Scaling
+  // between buckets is visually smooth, while the browser can reuse the completed glow.
+  function cachedNoteSprite(kind, color, requestedWidth, requestedHeight, requestedBlur, profile) {
+    const width = Math.max(8, Math.round(requestedWidth / 2) * 2);
+    const height = Math.max(8, Math.round(requestedHeight / 2) * 2);
+    const shadowBlur = Math.max(0, Math.round(requestedBlur / 4) * 4);
+    const density = Math.min(window.devicePixelRatio || 1, profile.dpr || 2);
+    const key = [kind, color, width, height, shadowBlur, density].join(':');
+    if (noteSpriteCache.has(key)) return noteSpriteCache.get(key);
+    if (noteSpriteCache.size > 280) noteSpriteCache.clear();
+
+    const padding = Math.ceil(shadowBlur * 1.75 + 4);
+    const cssWidth = width + padding * 2;
+    const cssHeight = height + padding * 2;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.ceil(cssWidth * density));
+    canvas.height = Math.max(1, Math.ceil(cssHeight * density));
+    const spriteCtx = canvas.getContext('2d');
+    spriteCtx.setTransform(density, 0, 0, density, 0, 0);
+    spriteCtx.translate(cssWidth / 2, cssHeight / 2);
+
+    const data = renderColorData(color);
+    if (kind === 'lane') {
+      spriteCtx.fillStyle = color;
+    } else {
+      const gradient = spriteCtx.createLinearGradient(-width * 0.42, -height * 0.45, width * 0.42, height * 0.45);
+      gradient.addColorStop(0, `rgb(${data.highlight.r},${data.highlight.g},${data.highlight.b})`);
+      gradient.addColorStop(0.3, `rgb(${data.light.r},${data.light.g},${data.light.b})`);
+      gradient.addColorStop(0.62, `rgb(${data.r},${data.g},${data.b})`);
+      gradient.addColorStop(1, `rgb(${data.light.r},${data.light.g},${data.light.b})`);
+      spriteCtx.fillStyle = gradient;
+    }
+    spriteCtx.shadowColor = kind === 'high' ? 'rgba(103,232,249,.95)' : color;
+    spriteCtx.shadowBlur = shadowBlur;
+    if (kind === 'high') roundedDiamond(spriteCtx, width, Math.max(6, width * 0.24));
+    else roundRect(spriteCtx, -width / 2, -height / 2, width, height, height / 2);
+    spriteCtx.fill();
+    spriteCtx.shadowBlur = 0;
+    if (kind !== 'lane') {
+      spriteCtx.strokeStyle = kind === 'high' ? 'rgba(207,250,254,.76)' : 'rgba(255,255,255,.28)';
+      spriteCtx.lineWidth = kind === 'high' ? 1.25 : 1;
+      spriteCtx.stroke();
+    }
+
+    const sprite = { canvas, cssWidth, cssHeight };
+    noteSpriteCache.set(key, sprite);
+    return sprite;
+  }
+
+  function drawCachedNoteSprite(ctx, sprite) {
+    ctx.drawImage(
+      sprite.canvas,
+      0, 0, sprite.canvas.width, sprite.canvas.height,
+      -sprite.cssWidth / 2, -sprite.cssHeight / 2, sprite.cssWidth, sprite.cssHeight
+    );
   }
 
   async function ensureAudio() {
@@ -5551,10 +5679,29 @@
     if (!target) return;
     const rect = target.getBoundingClientRect();
     const padding = 7;
-    els.tourFocusRing.style.left = `${Math.max(4, rect.left - padding)}px`;
-    els.tourFocusRing.style.top = `${Math.max(4, rect.top - padding)}px`;
-    els.tourFocusRing.style.width = `${Math.max(28, rect.width + padding * 2)}px`;
-    els.tourFocusRing.style.height = `${Math.max(28, rect.height + padding * 2)}px`;
+    const focusLeft = Math.max(4, rect.left - padding);
+    const focusTop = Math.max(4, rect.top - padding);
+    const focusRight = Math.min(window.innerWidth - 4, rect.right + padding);
+    const focusBottom = Math.min(window.innerHeight - 4, rect.bottom + padding);
+    const focusWidth = Math.max(28, focusRight - focusLeft);
+    const focusHeight = Math.max(28, focusBottom - focusTop);
+    els.tourFocusRing.style.left = `${focusLeft}px`;
+    els.tourFocusRing.style.top = `${focusTop}px`;
+    els.tourFocusRing.style.width = `${focusWidth}px`;
+    els.tourFocusRing.style.height = `${focusHeight}px`;
+
+    // Four small rectangles are much cheaper to repaint than a 9,999px spread shadow.
+    const setShade = (element, left, top, width, height) => {
+      if (!element) return;
+      element.style.left = `${left}px`;
+      element.style.top = `${top}px`;
+      element.style.width = `${Math.max(0, width)}px`;
+      element.style.height = `${Math.max(0, height)}px`;
+    };
+    setShade(els.tourShadeTop, 0, 0, window.innerWidth, focusTop);
+    setShade(els.tourShadeBottom, 0, focusBottom, window.innerWidth, window.innerHeight - focusBottom);
+    setShade(els.tourShadeLeft, 0, focusTop, focusLeft, focusHeight);
+    setShade(els.tourShadeRight, focusRight, focusTop, window.innerWidth - focusRight, focusHeight);
 
     window.requestAnimationFrame(() => {
       const cardWidth = els.tourCard.offsetWidth || 350;

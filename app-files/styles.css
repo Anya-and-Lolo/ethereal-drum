@@ -884,9 +884,13 @@ input[type="range"] { width:100%; accent-color:var(--accent); }
 .primary-btn:disabled { opacity:.42; cursor:not-allowed; transform:none; }
 .tour-overlay { position:fixed; inset:0; z-index:180; }
 .tour-overlay[hidden] { display:none; }
+.tour-shade {
+  position:fixed; background:rgba(4,7,13,.76); pointer-events:none;
+  transition:top .22s ease,left .22s ease,width .22s ease,height .22s ease;
+}
 .tour-focus-ring {
   position:fixed; border:2px solid var(--accent-2); border-radius:13px;
-  box-shadow:0 0 0 9999px rgba(4,7,13,.76),0 0 28px rgba(94,234,212,.58);
+  box-shadow:0 0 28px rgba(94,234,212,.58);
   pointer-events:none; transition:top .22s ease,left .22s ease,width .22s ease,height .22s ease;
 }
 .tour-card {
@@ -2414,3 +2418,18 @@ input[type="range"] { width:100%; accent-color:var(--accent); }
 
 /* v75: isolate canvas repaints from the controls and surrounding page. */
 .note-stage { contain:paint; }
+
+/* v76: touch devices keep the drum light, but avoid the layered filters and large live
+   shadows that are particularly costly while both canvas layers are animating. */
+@media (max-width:1180px), (pointer:coarse) {
+  .stage-drum-wrap { filter:none; }
+  .high-drum-wrap {
+    box-shadow:0 12px 26px rgba(2,6,23,.42),inset 0 1px rgba(255,255,255,.08);
+    transition:opacity .2s ease,transform .2s ease,visibility .2s ease,border-color .2s ease;
+  }
+  .high-drum-body,
+  .high-drum-wrap.engaged .high-drum-body {
+    box-shadow:0 0 18px rgba(103,232,249,.16),0 10px 24px rgba(2,6,23,.42),inset 0 1px rgba(255,255,255,.08);
+  }
+  .companion-guides line { filter:none; }
+}
