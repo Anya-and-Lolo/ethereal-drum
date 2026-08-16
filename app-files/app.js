@@ -16,9 +16,6 @@
   const COMMUNITY_UPLOAD_URL = String(window.ETHEREAL_COMMUNITY_UPLOAD_URL || '').trim();
   const COMMUNITY_STATUS_CALLBACK = 'etherealCommunityUploadStatus';
   const NOTE_COLORS = ['#a78bfa', '#5eead4', '#fbbf24', '#fb7185', '#60a5fa', '#f472b6', '#34d399', '#f97316', '#c084fc', '#22d3ee', '#eab308', '#a3e635', '#fda4af', '#67e8f9', '#bef264'];
-  // V74 comparison build: note pills, impact rings, drum light and guide lines remain;
-  // only the small comet particles are disabled so their exact device cost can be tested.
-  const FLYING_PARTICLES_ENABLED = false;
 
   const SCALE_INTERVALS = {
     major: [0, 2, 4, 5, 7, 9, 11],
@@ -2513,7 +2510,7 @@
       const color = noteColor(note.noteIndex);
       const alpha = dt < -0.2 ? Math.max(0, 1 + dt * 2) : 1;
       const noteIsMoving = state.playing && !state.countInActive && state.mode !== 'wait';
-      if (noteIsMoving && FLYING_PARTICLES_ENABLED) {
+      if (noteIsMoving) {
         drawFallingNoteParticles(
           ctx, note, x, y, radius, noteHeight, color, alpha,
           particleCount, profile.particleShadows
@@ -2860,7 +2857,7 @@
       const angle = target.high ? 0 : Math.atan2(target.dy, target.dx);
       const noteIsMoving = state.playing && !state.countInActive && state.mode !== 'wait';
 
-      if (noteIsMoving && FLYING_PARTICLES_ENABLED) {
+      if (noteIsMoving) {
         // Companion trails are intentionally shorter and calmer. The diamond shape plus
         // the cool halo makes them distinct without replacing each tongue's note colour.
         const particleClock = performance.now() / 1000;

@@ -1,4 +1,4 @@
-const CACHE = 'ethereal-drum-trainer-v74-no-particles-test';
+const CACHE = 'ethereal-drum-trainer-v73-mobile-performance';
 const SHELL = [
   './',
   './index.html',
