@@ -140,6 +140,18 @@ Click ? while inside one of those modes to replay that mode's walkthrough at
 any time. Click ? in Demo to replay the main walkthrough.
 
 
+OPTIONAL PERFORMANCE CHECK
+
+Add ?perf=1 to the end of the app address to show a small performance panel.
+For example:
+  index.html?perf=1
+
+The panel shows frames per second, average drawing time, visible notes, current
+particle quality, canvas resolution, and the number of prepared sounds. Remove
+?perf=1 from the address to hide it. This panel is intended for testing and is
+not shown during normal use.
+
+
 GOOGLE DRIVE COMMUNITY SUBMISSIONS
 
 The direct submission connection is configured. The ready-to-paste owner

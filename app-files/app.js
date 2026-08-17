@@ -74,6 +74,8 @@
   // CSS width of .stage-drum-wrap / .drum-body in the centre-drum view (see styles.css).
   const STAGE_DRUM_BASE = 360;
   const COUNT_IN_INTERVAL_MS = 1000;
+  const AUDIO_LOOKAHEAD_SECONDS = 0.12;
+  const AUDIO_SCHEDULER_INTERVAL_MS = 25;
   const INSTRUMENT_SETTINGS_FORMAT = 'ethereal-drum-settings-v1';
   const WALKTHROUGH_STEPS = [
     {
@@ -260,12 +262,35 @@
     return { r: parseInt(clean.slice(0, 2), 16), g: parseInt(clean.slice(2, 4), 16), b: parseInt(clean.slice(4, 6), 16) };
   }
 
-  // Colour mixing used to be recalculated for every visible note on every frame. The
-  // palette and custom colours change rarely, so cache all derived shades by hex value.
   const renderColorDataCache = new Map();
   const noteSpriteCache = new Map();
+  const noteLabelSpriteCache = new Map();
+  const glowTextureCache = new Map();
   const soundBufferCache = new Map();
+  const drumPlacementCache = new Map();
+  const padFlashTimers = new WeakMap();
+  let companionNotesCache = null;
+  let highDrumNotesCache = null;
+  let playableNotesCache = null;
+  let highDrumRouteCache = null;
   let soundCacheGeneration = 0;
+
+  function invalidateInstrumentRuntimeCaches() {
+    companionNotesCache = null;
+    highDrumNotesCache = null;
+    playableNotesCache = null;
+    highDrumRouteCache = null;
+    drumPlacementCache.clear();
+    noteSpriteCache.clear();
+    noteLabelSpriteCache.clear();
+    if (typeof state !== 'undefined') {
+      state.staticGuideCanvas = null;
+      state.staticGuideKey = '';
+      state.laneGuideCanvas = null;
+      state.laneGuideKey = '';
+    }
+  }
+
   function renderColorData(hex) {
     const color = normaliseColor(hex);
     if (renderColorDataCache.has(color)) return renderColorDataCache.get(color);
@@ -275,11 +300,8 @@
       g: Math.round(g + (255 - g) * amount),
       b: Math.round(b + (255 - b) * amount)
     });
-    const highlight = mix(0.56);
-    const light = mix(0.3);
-    const trail = mix(0.38);
     const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-    const data = { r, g, b, highlight, light, trail, ink: luminance > 0.58 ? '#101521' : '#ffffff' };
+    const data = { r, g, b, highlight: mix(.56), light: mix(.3), trail: mix(.38), ink: luminance > .58 ? '#101521' : '#ffffff' };
     renderColorDataCache.set(color, data);
     return data;
   }
@@ -403,11 +425,13 @@
   }
 
   function configuredCompanionNotes() {
-    return normaliseCompanionNotes(
+    if (companionNotesCache) return companionNotesCache;
+    companionNotesCache = normaliseCompanionNotes(
       state.instrument?.companionNotes,
       state.instrument?.key,
       state.instrument?.rootOctave
     );
+    return companionNotesCache;
   }
 
   function companionMatchesPreset(notes, key, rootOctave) {
@@ -420,9 +444,10 @@
   }
 
   function highDrumNotes() {
+    if (highDrumNotesCache) return highDrumNotesCache;
     const mainNotes = state.instrument?.notes || [];
     let extraIndex = mainNotes.length;
-    return configuredCompanionNotes().map((preset, slot) => {
+    highDrumNotesCache = configuredCompanionNotes().map((preset, slot) => {
       const mainIndex = mainNotes.findIndex(note => note.label.toLowerCase() === preset.label.toLowerCase());
       if (mainIndex >= 0) {
         return {
@@ -443,36 +468,38 @@
         source: 'high'
       };
     });
+    return highDrumNotesCache;
   }
 
   function playableNotes() {
+    if (playableNotesCache) return playableNotesCache;
     const main = (state.instrument?.notes || []).map((note, noteIndex) => ({
       ...note,
       noteIndex,
       source: 'main'
     }));
-    if (!highDrumEnabled()) return main;
-    return main.concat(highDrumNotes().filter(note => !note.shared));
+    playableNotesCache = highDrumEnabled()
+      ? main.concat(highDrumNotes().filter(note => !note.shared))
+      : main;
+    return playableNotesCache;
   }
 
   function playableNoteAt(noteIndex) {
-    if (noteIndex < (state.instrument?.notes?.length || 0)) return state.instrument.notes[noteIndex];
-    return highDrumEnabled() ? highDrumNotes().find(note => note.noteIndex === noteIndex) : null;
+    return playableNotes()[noteIndex] || null;
   }
 
   function highDrumSlotForLabel(label) {
     if (!highDrumEnabled()) return -1;
     const normalisedLabel = String(label || '').toLowerCase();
-    const slot = configuredCompanionNotes().findIndex(note => note.label.toLowerCase() === normalisedLabel);
-    if (slot < 0) return -1;
-
-    // The companion repeats D5, E5 and F#5 (1̇, 2̇ and 3̇), which are already
-    // present on the main 15-note drum. Automatic playback should always route
-    // those shared pitches to the main drum. The companion is reserved for its
-    // five range-extending pitches: 4̇, 5̇, 6̇, 7̇ and 1̇̇.
-    const sharedWithMainDrum = (state.instrument?.notes || [])
-      .some(note => String(note.label || '').toLowerCase() === normalisedLabel);
-    return sharedWithMainDrum ? -1 : slot;
+    if (!highDrumRouteCache) {
+      const mainLabels = new Set((state.instrument?.notes || []).map(note => String(note.label || '').toLowerCase()));
+      highDrumRouteCache = new Map();
+      configuredCompanionNotes().forEach((note, slot) => {
+        const key = String(note.label || '').toLowerCase();
+        highDrumRouteCache.set(key, mainLabels.has(key) ? -1 : slot);
+      });
+    }
+    return highDrumRouteCache.get(normalisedLabel) ?? -1;
   }
 
   // The tonic ("1") of the middle octave, from the key + lowest-octave selects.
@@ -642,7 +669,10 @@
     audioContext: null,
     masterGain: null,
     lastScheduledIndex: -1,
+    lastVisualFlashIndex: -1,
     lastMetronomeBeat: -1,
+    audioSchedulerId: 0,
+    scheduledAudioNodes: new Set(),
     score: 0,
     attempts: 0,
     streak: 0,
@@ -689,11 +719,14 @@
     visualMonitorLastFrameAt: 0,
     staticGuideCanvas: null,
     staticGuideKey: '',
+    laneGuideCanvas: null,
+    laneGuideKey: '',
     stageDrumGeometryKey: '',
     expectedPadSignature: '',
     expectedPadAnchor: null,
     particlePhaseCache: new Map(),
     stageTonguePads: [],
+    tonguePadsByNote: new Map(),
     companionGeometryCache: null,
     companionGuideGeometryKey: '',
     micEnabled: false,
@@ -706,7 +739,14 @@
     micNoiseFloor: 0.008,
     micWasLoud: false,
     micLastTrigger: 0,
-    tunerResult: null
+    tunerResult: null,
+    perfEnabled: new URLSearchParams(window.location.search).has('perf'),
+    perfOverlay: null,
+    perfFrameCount: 0,
+    perfRenderTotal: 0,
+    perfLastReportAt: 0,
+    perfVisibleNotes: 0,
+    catalogPollTimer: 0
   };
 
   const $ = (id) => document.getElementById(id);
@@ -876,6 +916,7 @@
     } catch {
       state.instrument = makeDefaultInstrument(15);
     }
+    invalidateInstrumentRuntimeCaches();
     const savedView = localStorage.getItem(STORAGE_VIEW);
     state.visualMode = savedView === 'lanes' ? 'lanes' : 'radial';
     state.showPitchNames = localStorage.getItem(STORAGE_EDITOR_PITCH_NAMES) === 'true';
@@ -1560,6 +1601,20 @@
     };
   }
 
+  function preparePlaybackNotes(notes) {
+    return notes.map(note => {
+      const color = note.color;
+      return {
+        ...note,
+        color,
+        inkColor: noteInkColor(color),
+        highDrumSlot: highDrumSlotForLabel(note.label),
+        placement: getDrumPlacement(note.noteIndex),
+        midi: playableNoteAt(note.noteIndex)?.midi ?? 60
+      };
+    });
+  }
+
   function selectSong(id) {
     stopPlayback(false);
     state.selectedId = id;
@@ -1580,7 +1635,8 @@
     const song = selectedSong();
     if (!song) return;
     const parsed = parseSequence(song.sequence, song.bpm);
-    state.parsedNotes = parsed.notes;
+    state.parsedNotes = preparePlaybackNotes(parsed.notes);
+    state.particlePhaseCache.clear();
     state.duration = parsed.duration;
     state.secondsPerBeat = parsed.secondsPerBeat;
     state.totalBeats = parsed.totalBeats;
@@ -1830,8 +1886,9 @@
         throw new Error('Unsupported drum settings file');
       }
       state.instrument = normaliseInstrument(data.instrument);
+      invalidateInstrumentRuntimeCaches();
       saveInstrument();
-      preCacheInstrumentSounds().catch(error => console.warn('Sound cache refresh failed:', error));
+      preCacheInstrumentSounds().catch(error => console.warn('Could not refresh the sound cache:', error));
       renderInstrument();
       selectSong(state.selectedId);
       renderMyDrum();
@@ -1845,9 +1902,14 @@
   }
 
   function getDrumPlacement(noteIndex, count = state.instrument.count) {
+    const cacheKey = `${count}:${noteIndex}`;
+    if (drumPlacementCache.has(cacheKey)) return drumPlacementCache.get(cacheKey);
     const layout = DRUM_LAYOUTS[count];
-    if (layout?.[noteIndex]) return { ...layout[noteIndex], manual: true, ring: 'single' };
-    return { angle: (360 / count) * noteIndex, ring: 'single', size: 'regular' };
+    const placement = layout?.[noteIndex]
+      ? { ...layout[noteIndex], manual: true, ring: 'single' }
+      : { angle: (360 / count) * noteIndex, ring: 'single', size: 'regular' };
+    drumPlacementCache.set(cacheKey, placement);
+    return placement;
   }
 
   function createDrum(container, isStage = false) {
@@ -1947,6 +2009,14 @@
       ...els.stageDrumWrap.querySelectorAll('.tongue'),
       ...els.highDrumWrap.querySelectorAll('.tongue')
     ];
+    state.tonguePadsByNote = new Map();
+    [els.drumWrap, els.stageDrumWrap, els.highDrumWrap].forEach(container => {
+      container?.querySelectorAll('.tongue').forEach(pad => {
+        const noteIndex = Number(pad.dataset.noteIndex);
+        if (!state.tonguePadsByNote.has(noteIndex)) state.tonguePadsByNote.set(noteIndex, []);
+        state.tonguePadsByNote.get(noteIndex).push(pad);
+      });
+    });
     state.companionGeometryCache = null;
     state.companionGuideGeometryKey = '';
     state.particlePhaseCache.clear();
@@ -2021,6 +2091,14 @@
     addRow([{ items: low, caption: 'Low notes' }]);
   }
 
+  function setTextIfChanged(element, value) {
+    if (element && element.textContent !== value) element.textContent = value;
+  }
+
+  function setToneIfChanged(element, value) {
+    if (element && element.dataset.tone !== value) element.dataset.tone = value;
+  }
+
   function updatePracticeUI() {
     const current = state.currentTime;
     let next;
@@ -2032,12 +2110,12 @@
       next = state.parsedNotes[nextIndex];
     }
     if (next) {
-      els.nextNoteValue.textContent = next.label;
+      setTextIfChanged(els.nextNoteValue, next.label);
       const delta = Math.max(0, next.time - current);
-      els.nextNoteTime.textContent = delta < .05 ? 'Now' : `in ${delta.toFixed(1)}s`;
+      setTextIfChanged(els.nextNoteTime, delta < .05 ? 'Now' : `in ${delta.toFixed(1)}s`);
     } else {
-      els.nextNoteValue.textContent = '✓';
-      els.nextNoteTime.textContent = state.playing ? 'Finishing' : 'Complete';
+      setTextIfChanged(els.nextNoteValue, '✓');
+      setTextIfChanged(els.nextNoteTime, state.playing ? 'Finishing' : 'Complete');
     }
     const firstFutureIndex = noteIndexAtOrAfter(current - 0.06);
     const sectionEndIndex = state.sectionLoop && Number.isFinite(state.loopB)
@@ -2047,16 +2125,17 @@
       ? Math.max(0, state.parsedNotes.length - state.waitingIndex)
       : Math.max(0, sectionEndIndex - firstFutureIndex);
     const totalNotes = state.parsedNotes.length;
-    els.totalNotesLabel.textContent = `${totalNotes} ${totalNotes === 1 ? 'note' : 'notes'} total`;
-    els.notesLeftValue.textContent = String(notesLeft);
-    if (els.mobileNotesLeftValue) els.mobileNotesLeftValue.textContent = String(notesLeft);
-    els.elapsedLabel.textContent = formatTime(current);
-    els.progress.value = state.duration ? Math.round((current / state.duration) * 1000) : 0;
+    setTextIfChanged(els.totalNotesLabel, `${totalNotes} ${totalNotes === 1 ? 'note' : 'notes'} total`);
+    setTextIfChanged(els.notesLeftValue, String(notesLeft));
+    setTextIfChanged(els.mobileNotesLeftValue, String(notesLeft));
+    setTextIfChanged(els.elapsedLabel, formatTime(current));
+    const progressValue = state.duration ? Math.round((current / state.duration) * 1000) : 0;
+    if (Number(els.progress.value) !== progressValue) els.progress.value = progressValue;
     const scorePercent = state.attempts ? Math.round((state.score / state.attempts) * 100) : 0;
-    els.scoreValue.textContent = `${scorePercent}%`;
-    els.streakValue.textContent = String(state.streak);
-    if (els.mobileScoreValue) els.mobileScoreValue.textContent = `${scorePercent}%`;
-    if (els.mobileStreakValue) els.mobileStreakValue.textContent = String(state.streak);
+    setTextIfChanged(els.scoreValue, `${scorePercent}%`);
+    setTextIfChanged(els.streakValue, String(state.streak));
+    setTextIfChanged(els.mobileScoreValue, `${scorePercent}%`);
+    setTextIfChanged(els.mobileStreakValue, String(state.streak));
     const scoreTone = !state.attempts || scorePercent === 0
       ? 'neutral'
       : scorePercent >= 80
@@ -2065,10 +2144,10 @@
           ? 'warning'
           : 'danger';
     const streakTone = state.streak === 0 ? 'neutral' : state.streak >= 3 ? 'success' : 'building';
-    els.scorePill.dataset.tone = scoreTone;
-    els.streakPill.dataset.tone = streakTone;
-    if (els.mobileScorePill) els.mobileScorePill.dataset.tone = scoreTone;
-    if (els.mobileStreakPill) els.mobileStreakPill.dataset.tone = streakTone;
+    setToneIfChanged(els.scorePill, scoreTone);
+    setToneIfChanged(els.streakPill, streakTone);
+    setToneIfChanged(els.mobileScorePill, scoreTone);
+    setToneIfChanged(els.mobileStreakPill, streakTone);
   }
 
   // Keep musical timing independent from drawing cost. Phones use a deliberately lean
@@ -2082,7 +2161,7 @@
     if (phoneLayout) {
       return {
         name: 'phone', dpr: 1, visualInterval: 34, uiInterval: 100,
-        backdropInterval: 100, ambientInterval: 66, stars: 52,
+        backdropInterval: 100, ambientInterval: 100, stars: 52,
         particleQualityCap: 'none', fallingParticles: 27,
         radialParticles: 36, companionParticles: 18,
         particleBudget: 0, particleShadows: false
@@ -2091,7 +2170,7 @@
     if (width <= 1100 || coarsePointer) {
       return {
         name: 'tablet', dpr: 1.25, visualInterval: 25, uiInterval: 80,
-        backdropInterval: 67, ambientInterval: 40, stars: 78,
+        backdropInterval: 67, ambientInterval: 80, stars: 78,
         particleQualityCap: 'half', fallingParticles: 27,
         radialParticles: 36, companionParticles: 18,
         particleBudget: 144, particleShadows: false
@@ -2099,7 +2178,7 @@
     }
     return {
       name: 'desktop', dpr: 1.75, visualInterval: 0, uiInterval: 33,
-      backdropInterval: 33, ambientInterval: 40, stars: 110,
+      backdropInterval: 33, ambientInterval: 66, stars: 110,
       particleQualityCap: 'full',
       fallingParticles: 27, radialParticles: 36, companionParticles: 18,
       particleBudget: 432, particleShadows: true
@@ -2143,33 +2222,19 @@
     return true;
   }
 
-  // Measure actual foreground drawing pressure rather than guessing from a device name.
-  // Quality only moves downward during a session, which avoids particles appearing and
-  // disappearing repeatedly in a difficult passage. Audio scheduling is outside this
-  // monitor and continues on every animation frame.
   function monitorVisualPerformance(frameStartedAt, frameFinishedAt, profile) {
     const targetInterval = profile.visualInterval || 16.7;
     const renderCost = Math.max(0, frameFinishedAt - frameStartedAt);
-    const frameGap = state.visualMonitorLastFrameAt
-      ? frameStartedAt - state.visualMonitorLastFrameAt
-      : targetInterval;
+    const frameGap = state.visualMonitorLastFrameAt ? frameStartedAt - state.visualMonitorLastFrameAt : targetInterval;
     state.visualMonitorLastFrameAt = frameStartedAt;
     state.visualMonitorSamples += 1;
-    state.visualMonitorCostAverage += (renderCost - state.visualMonitorCostAverage) * 0.08;
-
-    // A 30 Hz display should not be mistaken for a slow desktop. A gap must exceed more
-    // than two target intervals, or the canvas call itself must consume most of a frame.
-    if (renderCost > targetInterval * 0.62 || frameGap > targetInterval * 2.1) {
-      state.visualMonitorSlowSamples += 1;
-    }
-
+    state.visualMonitorCostAverage += (renderCost - state.visualMonitorCostAverage) * .08;
+    if (renderCost > targetInterval * .62 || frameGap > targetInterval * 2.1) state.visualMonitorSlowSamples += 1;
     const elapsed = frameFinishedAt - state.visualMonitorStartedAt;
     if (elapsed < 2400 || state.visualMonitorSamples < 48) return;
     const slowRatio = state.visualMonitorSlowSamples / state.visualMonitorSamples;
-    const drawingIsHeavy = state.visualMonitorCostAverage > targetInterval * 0.52;
-    if (slowRatio >= 0.24 || drawingIsHeavy) {
-      // First reduce decorative particles. If the profile is already particle-free,
-      // halve only the background animation rate; note motion and audio remain unchanged.
+    const drawingIsHeavy = state.visualMonitorCostAverage > targetInterval * .52;
+    if (slowRatio >= .24 || drawingIsHeavy) {
       const reducedParticles = downgradeParticleQuality();
       if (reducedParticles && profile.name === 'desktop' && state.backgroundRateScale < 2) {
         state.backgroundRateScale = 2;
@@ -2178,10 +2243,33 @@
         state.backgroundRateScale = 2;
         state.lastBackdropAt = 0;
         resetVisualPerformanceMonitor(frameFinishedAt);
-      } else if (state.backgroundRateScale >= 2) {
-        resetVisualPerformanceMonitor(frameFinishedAt);
-      }
+      } else if (state.backgroundRateScale >= 2) resetVisualPerformanceMonitor(frameFinishedAt);
     } else resetVisualPerformanceMonitor(frameFinishedAt);
+  }
+
+  function initialisePerformanceDiagnostics() {
+    if (!state.perfEnabled || state.perfOverlay) return;
+    const overlay = document.createElement('aside');
+    overlay.className = 'performance-hud';
+    overlay.setAttribute('aria-label', 'Performance diagnostics');
+    document.body.appendChild(overlay);
+    state.perfOverlay = overlay;
+  }
+
+  function recordPerformanceDiagnostics(frameStartedAt, frameFinishedAt, profile) {
+    if (!state.perfEnabled || !state.perfOverlay) return;
+    if (!state.perfLastReportAt) state.perfLastReportAt = frameStartedAt;
+    state.perfFrameCount += 1;
+    state.perfRenderTotal += Math.max(0, frameFinishedAt - frameStartedAt);
+    const elapsed = frameFinishedAt - state.perfLastReportAt;
+    if (elapsed < 1000) return;
+    const fps = Math.round(state.perfFrameCount * 1000 / elapsed);
+    const averageRender = state.perfFrameCount ? state.perfRenderTotal / state.perfFrameCount : 0;
+    const dpr = Math.min(window.devicePixelRatio || 1, profile.dpr || 2).toFixed(2);
+    state.perfOverlay.innerHTML = `<strong>${profile.name}</strong><span>${fps} FPS</span><span>${averageRender.toFixed(1)} ms draw</span><span>${state.perfVisibleNotes} visible notes</span><span>${state.particleQuality || 'none'} particles</span><span>${dpr} DPR</span><span>${soundBufferCache.size} sounds cached</span>`;
+    state.perfFrameCount = 0;
+    state.perfRenderTotal = 0;
+    state.perfLastReportAt = frameFinishedAt;
   }
 
   function effectiveBackdropInterval(profile) {
@@ -2196,7 +2284,7 @@
   function particleCountWithinBudget(maximum, visibleNotes, profile) {
     const quality = state.particleQuality || profile.particleQualityCap;
     if (quality === 'none') return 0;
-    const multiplier = quality === 'half' ? 0.5 : 1;
+    const multiplier = quality === 'half' ? .5 : 1;
     const qualityMaximum = Math.max(3, Math.floor((maximum * multiplier) / 3) * 3);
     if (!Number.isFinite(profile.particleBudget)) return qualityMaximum;
     const budgeted = Math.floor(profile.particleBudget / Math.max(1, visibleNotes));
@@ -2211,6 +2299,8 @@
     state.performanceProfile = performanceProfileFor(rect.width);
     if (!previousProfile || previousProfile.name !== state.performanceProfile.name || previousProfile.dpr !== state.performanceProfile.dpr) {
       noteSpriteCache.clear();
+      noteLabelSpriteCache.clear();
+      glowTextureCache.clear();
     }
     configureParticleQuality(state.performanceProfile);
     // A phone DPR of 1 cuts the two canvas buffers to 44% of their previous DPR-1.5
@@ -2229,6 +2319,8 @@
     state.backdropMode = '';
     state.staticGuideCanvas = null;
     state.staticGuideKey = '';
+    state.laneGuideCanvas = null;
+    state.laneGuideKey = '';
     buildStarField(rect.width, rect.height);
     renderFrame();
   }
@@ -2296,7 +2388,13 @@
       }
       activeIndices = state.mode === 'tuner' ? new Set() : renderRadialFrame(ctx, width, height);
     } else {
-      if (back && state.backdropMode !== 'lanes') back.clearRect(0, 0, width, height);
+      if (back) {
+        const laneGuides = laneGuideLayer(width, height, playableNotes().length, profile);
+        if (state.backdropMode !== 'lanes' || laneGuides.fresh) {
+          back.clearRect(0, 0, width, height);
+          back.drawImage(laneGuides.canvas, 0, 0, laneGuides.canvas.width, laneGuides.canvas.height, 0, 0, width, height);
+        }
+      }
       state.backdropMode = 'lanes';
       activeIndices = state.mode === 'tuner' ? new Set() : renderLaneFrame(ctx, width, height);
     }
@@ -2340,7 +2438,7 @@
       const { start, end } = noteWindow(state.currentTime - 0.35, state.currentTime + previewSeconds);
       for (let index = start; index < end; index += 1) {
         const note = state.parsedNotes[index];
-        if (highDrumSlotForLabel(note.label) < 0) continue;
+        if (note.highDrumSlot < 0) continue;
         const dt = note.time - state.currentTime;
         hasApproachingNote = true;
         nearest = Math.min(nearest, Math.abs(dt));
@@ -2385,7 +2483,7 @@
     const { start, end } = noteWindow(state.currentTime - 0.16, state.currentTime + previewSeconds);
     for (let index = start; index < end; index += 1) {
       const note = state.parsedNotes[index];
-      const slot = highDrumSlotForLabel(note.label);
+      const slot = note.highDrumSlot;
       if (slot < 0) continue;
       const dt = note.time - state.currentTime;
       const proximity = Math.max(0, Math.min(1, 1 - Math.max(0, dt) / previewSeconds));
@@ -2456,21 +2554,20 @@
     const buckets = Array.from({ length: bucketCount }, () => []);
     state.stars.forEach(star => {
       if (!fixedPositions) {
-        const rate = 0.18 + star.depth * 1.05;
+        const rate = .18 + star.depth * 1.05;
         star.x = (star.x + PARALLAX.x * rate * star.wobble * pace + width) % width;
         star.y = (star.y + PARALLAX.y * rate * pace + height) % height;
       }
-      const twinkle = 0.5 + 0.5 * Math.sin(now * star.speed + star.phase);
-      const alpha = star.base * (0.3 + 0.7 * twinkle);
-      const bucket = Math.min(bucketCount - 1, Math.floor((alpha / 0.7) * bucketCount));
+      const twinkle = .5 + .5 * Math.sin(now * star.speed + star.phase);
+      const alpha = star.base * (.3 + .7 * twinkle);
+      const bucket = Math.min(bucketCount - 1, Math.floor((alpha / .7) * bucketCount));
       buckets[bucket].push(star);
     });
-
     ctx.save();
     ctx.fillStyle = '#ffffff';
     buckets.forEach((stars, bucket) => {
       if (!stars.length) return;
-      ctx.globalAlpha = ((bucket + 0.5) / bucketCount) * 0.7;
+      ctx.globalAlpha = ((bucket + .5) / bucketCount) * .7;
       ctx.beginPath();
       stars.forEach(star => {
         ctx.moveTo(star.x + star.r, star.y);
@@ -2492,8 +2589,31 @@
     { orbit: 0.08, speed: 0.161, phase: 2.4, size: 0.70, tint: '110,140,255', alpha: 0.08 }
   ];
 
+  function cachedGlowTexture(key, stops) {
+    const profile = visualPerformanceProfile();
+    const density = Math.min(window.devicePixelRatio || 1, profile.dpr || 2);
+    const cacheKey = `${key}:${density}`;
+    const existing = cacheGet(glowTextureCache, cacheKey);
+    if (existing) return existing;
+    const cssSize = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(cssSize * density);
+    canvas.height = Math.ceil(cssSize * density);
+    const textureCtx = canvas.getContext('2d');
+    textureCtx.setTransform(density, 0, 0, density, 0, 0);
+    const gradient = textureCtx.createRadialGradient(cssSize / 2, cssSize / 2, 0, cssSize / 2, cssSize / 2, cssSize / 2);
+    stops.forEach(([offset, color]) => gradient.addColorStop(offset, color));
+    textureCtx.fillStyle = gradient;
+    textureCtx.fillRect(0, 0, cssSize, cssSize);
+    return cacheSet(glowTextureCache, cacheKey, { canvas, cssSize }, 24);
+  }
+
+  function drawGlowTexture(ctx, texture, cx, cy, radius) {
+    ctx.drawImage(texture.canvas, cx - radius, cy - radius, radius * 2, radius * 2);
+  }
+
   function drawAmoeba(ctx, cx, cy, size, now) {
-    const compactLayout = ctx.canvas.clientWidth <= 1100 || window.matchMedia?.('(pointer: coarse)').matches;
+    const compactLayout = visualPerformanceProfile(ctx.canvas.clientWidth).name !== 'desktop';
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
 
@@ -2521,34 +2641,32 @@
       const ox = cx + Math.cos(now * lobe.speed + lobe.phase) * size * lobe.orbit;
       const oy = cy + Math.sin(now * lobe.speed * 1.27 + lobe.phase * 1.4) * size * lobe.orbit * 0.82;
       const radius = size * lobe.size * breathe;
-      const gradient = ctx.createRadialGradient(ox, oy, 0, ox, oy, radius);
-      gradient.addColorStop(0, `rgba(${lobe.tint},${lobe.alpha})`);
-      gradient.addColorStop(0.42, `rgba(${lobe.tint},${(lobe.alpha * 0.42).toFixed(4)})`);
-      gradient.addColorStop(1, `rgba(${lobe.tint},0)`);
-      ctx.fillStyle = gradient;
-      ctx.beginPath();
-      ctx.arc(ox, oy, radius, 0, Math.PI * 2);
-      ctx.fill();
+      const texture = cachedGlowTexture(`amoeba:${lobe.tint}:${lobe.alpha}`, [
+        [0, `rgba(${lobe.tint},${lobe.alpha})`],
+        [.42, `rgba(${lobe.tint},${(lobe.alpha * .42).toFixed(4)})`],
+        [1, `rgba(${lobe.tint},0)`]
+      ]);
+      drawGlowTexture(ctx, texture, ox, oy, radius);
     });
     ctx.restore();
   }
 
   function drawDrumHalo(ctx, cx, cy, size, now) {
     const pulse = 1 + Math.sin(now * 0.82) * 0.035;
-    const compactLayout = ctx.canvas.clientWidth <= 1100 || window.matchMedia?.('(pointer: coarse)').matches;
+    const compactLayout = visualPerformanceProfile(ctx.canvas.clientWidth).name !== 'desktop';
     const innerRadius = size * (compactLayout ? 0.45 : 0.47);
     const outerRadius = size * (compactLayout ? 0.72 : 0.76) * pulse;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    const halo = ctx.createRadialGradient(cx, cy, innerRadius, cx, cy, outerRadius);
-    halo.addColorStop(0, compactLayout ? 'rgba(126,156,255,.30)' : 'rgba(126,156,255,.3)');
-    halo.addColorStop(0.22, compactLayout ? 'rgba(116,147,255,.17)' : 'rgba(116,147,255,.17)');
-    halo.addColorStop(0.58, compactLayout ? 'rgba(109,130,246,.06)' : 'rgba(109,130,246,.07)');
-    halo.addColorStop(1, 'rgba(109,130,246,0)');
-    ctx.fillStyle = halo;
-    ctx.beginPath();
-    ctx.arc(cx, cy, outerRadius, 0, Math.PI * 2);
-    ctx.fill();
+    const innerRatio = Math.max(0, Math.min(.9, innerRadius / outerRadius));
+    const haloTexture = cachedGlowTexture(`halo:${compactLayout ? 'compact' : 'desktop'}`, [
+      [0, 'rgba(126,156,255,.3)'],
+      [innerRatio, 'rgba(126,156,255,.3)'],
+      [innerRatio + (1 - innerRatio) * .22, 'rgba(116,147,255,.17)'],
+      [innerRatio + (1 - innerRatio) * .58, compactLayout ? 'rgba(109,130,246,.06)' : 'rgba(109,130,246,.07)'],
+      [1, 'rgba(109,130,246,0)']
+    ]);
+    drawGlowTexture(ctx, haloTexture, cx, cy, outerRadius);
 
     ctx.globalAlpha = 0.36 + Math.sin(now * 0.82) * 0.08;
     ctx.strokeStyle = 'rgba(170,186,255,.72)';
@@ -2567,7 +2685,7 @@
     const { start, end } = noteWindow(state.currentTime - 0.16, state.currentTime + previewSeconds);
     for (let index = start; index < end; index += 1) {
       const note = state.parsedNotes[index];
-      if (highDrumSlotForLabel(note.label) >= 0) continue;
+      if (note.highDrumSlot >= 0) continue;
       const dt = note.time - state.currentTime;
       const proximity = Math.max(0, Math.min(1, 1 - Math.max(0, dt) / previewSeconds));
       const hitFade = dt < 0 ? Math.max(0, 1 + dt / 0.16) : 1;
@@ -2586,14 +2704,14 @@
     const edgeY = geometry.cy + target.dy * edgeRadius;
     const lineGradient = ctx.createLinearGradient(startX, startY, edgeX, edgeY);
     if (activeOverlay) {
-      lineGradient.addColorStop(0, `rgba(255,255,255,${(strength * 0.84).toFixed(3)})`);
-      lineGradient.addColorStop(0.24, `rgba(255,255,255,${(strength * 0.43).toFixed(3)})`);
-      lineGradient.addColorStop(0.62, `rgba(255,255,255,${(strength * 0.12).toFixed(3)})`);
-      lineGradient.addColorStop(1, `rgba(255,255,255,${(strength * 0.012).toFixed(3)})`);
+      lineGradient.addColorStop(0, `rgba(255,255,255,${(strength * .84).toFixed(3)})`);
+      lineGradient.addColorStop(.24, `rgba(255,255,255,${(strength * .43).toFixed(3)})`);
+      lineGradient.addColorStop(.62, `rgba(255,255,255,${(strength * .12).toFixed(3)})`);
+      lineGradient.addColorStop(1, `rgba(255,255,255,${(strength * .012).toFixed(3)})`);
     } else {
       lineGradient.addColorStop(0, 'rgba(255,255,255,.09)');
-      lineGradient.addColorStop(0.24, 'rgba(255,255,255,.065)');
-      lineGradient.addColorStop(0.62, 'rgba(255,255,255,.03)');
+      lineGradient.addColorStop(.24, 'rgba(255,255,255,.065)');
+      lineGradient.addColorStop(.62, 'rgba(255,255,255,.03)');
       lineGradient.addColorStop(1, 'rgba(255,255,255,.006)');
     }
     ctx.strokeStyle = lineGradient;
@@ -2616,11 +2734,7 @@
     canvas.height = Math.max(1, Math.round(height * density));
     const guideCtx = canvas.getContext('2d');
     guideCtx.setTransform(density, 0, 0, density, 0, 0);
-    guideCtx.save();
-    state.instrument.notes.forEach((_note, noteIndex) => {
-      drawRadialGuide(guideCtx, width, height, geometry, noteIndex);
-    });
-    guideCtx.restore();
+    state.instrument.notes.forEach((_note, noteIndex) => drawRadialGuide(guideCtx, width, height, geometry, noteIndex));
     state.staticGuideCanvas = canvas;
     state.staticGuideKey = key;
     return canvas;
@@ -2637,27 +2751,22 @@
     const guideStrengths = radialGuideStrengths(4.2 / state.speed);
     ctx.save();
     guideStrengths.forEach((strength, noteIndex) => {
-      if (strength > 0.001) drawRadialGuide(ctx, width, height, geometry, noteIndex, strength, true);
+      if (strength > .001) drawRadialGuide(ctx, width, height, geometry, noteIndex, strength, true);
     });
     ctx.restore();
   }
 
-  function renderLaneFrame(ctx, width, height) {
-    const lanes = playableNotes().length;
-    const laneW = width / lanes;
+  function drawLaneGuides(ctx, width, height, lanes) {
+    const laneW = width / Math.max(1, lanes);
     const hitY = height - 52;
-    const previewSeconds = 4.2 / state.speed;
-    const compactNotes = width <= 760 || window.matchMedia?.('(pointer: coarse)').matches;
-
     ctx.lineWidth = 1;
-    for (let i = 0; i <= lanes; i++) {
-      ctx.strokeStyle = 'rgba(255,255,255,.035)';
-      ctx.beginPath();
-      ctx.moveTo(i * laneW, 0);
-      ctx.lineTo(i * laneW, height);
-      ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,.035)';
+    ctx.beginPath();
+    for (let index = 0; index <= lanes; index += 1) {
+      ctx.moveTo(index * laneW, 0);
+      ctx.lineTo(index * laneW, height);
     }
-
+    ctx.stroke();
     ctx.strokeStyle = 'rgba(94,234,212,.7)';
     ctx.shadowColor = 'rgba(94,234,212,.5)';
     ctx.shadowBlur = 12;
@@ -2667,11 +2776,35 @@
     ctx.lineTo(width, hitY);
     ctx.stroke();
     ctx.shadowBlur = 0;
+  }
+
+  function laneGuideLayer(width, height, lanes, profile) {
+    const density = Math.min(window.devicePixelRatio || 1, profile.dpr || 2);
+    const key = [width, height, lanes, density].join(':');
+    if (state.laneGuideCanvas && state.laneGuideKey === key) return { canvas: state.laneGuideCanvas, key, fresh: false };
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width * density));
+    canvas.height = Math.max(1, Math.round(height * density));
+    const guideCtx = canvas.getContext('2d');
+    guideCtx.setTransform(density, 0, 0, density, 0, 0);
+    drawLaneGuides(guideCtx, width, height, lanes);
+    state.laneGuideCanvas = canvas;
+    state.laneGuideKey = key;
+    return { canvas, key, fresh: true };
+  }
+
+  function renderLaneFrame(ctx, width, height) {
+    const lanes = playableNotes().length;
+    const laneW = width / lanes;
+    const hitY = height - 52;
+    const previewSeconds = 4.2 / state.speed;
+    const profile = visualPerformanceProfile(width);
+    const compactNotes = profile.name !== 'desktop';
 
     const activeIndices = new Set();
     const { start, end } = noteWindow(state.currentTime - 0.55, state.currentTime + previewSeconds);
-    const profile = visualPerformanceProfile(width);
     const visibleNotes = Math.max(1, end - start);
+    state.perfVisibleNotes = end - start;
     const particleCount = particleCountWithinBudget(profile.fallingParticles, visibleNotes, profile);
     const particleClock = particleCount ? performance.now() / 1000 : 0;
     for (let index = start; index < end; index += 1) {
@@ -2700,11 +2833,7 @@
           particleCount, profile.particleShadows, particleClock
         );
       }
-      const noteSprite = cachedNoteSprite(
-        'lane', color, radius * 2, noteHeight,
-        dt < .15 && dt > -.15 ? 24 : 10,
-        profile
-      );
+      const noteSprite = cachedNoteSprite('lane', color, radius * 2, noteHeight, dt < .15 && dt > -.15 ? 24 : 10, profile);
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.translate(x, y);
@@ -2713,7 +2842,8 @@
       const labelSize = compactNotes
         ? Math.max(13, Math.min(18, width * .04 * growth))
         : laneW < 30 ? 10 : 13;
-      drawFlyingNoteLabel(ctx, note.label, x, y, labelSize, noteInkColor(color));
+      const labelSprite = cachedNoteLabel(note.label, labelSize, note.inkColor, profile);
+      drawCachedNoteLabel(ctx, labelSprite, x, y);
       ctx.globalAlpha = 1;
       if (Math.abs(dt) < .14) activeIndices.add(note.noteIndex);
     }
@@ -2739,7 +2869,7 @@
   }
 
   // Keeps the starfield twinkling and the amoeba drifting while the transport is idle.
-  // Throttled to ~30fps, and it stands aside completely while playback drives the frames.
+  // Uses a battery-friendly idle rate and stands aside while playback drives the frames.
   function ambientTick(now) {
     state.ambientId = 0;
     if (state.visualMode !== 'radial') return;
@@ -2802,8 +2932,8 @@
     };
   }
 
-  function getHighDrumTarget(label, cx, cy) {
-    const slot = highDrumSlotForLabel(label);
+  function getHighDrumTarget(label, cx, cy, knownSlot = null) {
+    const slot = Number.isInteger(knownSlot) ? knownSlot : highDrumSlotForLabel(label);
     const geometry = companionGeometry();
     if (slot < 0 || !geometry) return null;
     const angle = slot * Math.PI / 4;
@@ -2887,6 +3017,47 @@
     ctx.restore();
   }
 
+  function cacheGet(cache, key) {
+    return cache.has(key) ? cache.get(key) : null;
+  }
+
+  function cacheSet(cache, key, value, maximum) {
+    cache.set(key, value);
+    while (cache.size > maximum) cache.delete(cache.keys().next().value);
+    return value;
+  }
+
+  function cachedNoteLabel(label, requestedFontSize, inkColor, profile) {
+    const fontSize = Math.max(8, Math.round(requestedFontSize));
+    const density = Math.min(window.devicePixelRatio || 1, profile.dpr || 2);
+    const key = [label, fontSize, inkColor, density].join(':');
+    const existing = cacheGet(noteLabelSpriteCache, key);
+    if (existing) return existing;
+    const cssWidth = Math.ceil(Math.max(24, fontSize * 2.2));
+    const cssHeight = Math.ceil(Math.max(28, fontSize * 2.35));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.ceil(cssWidth * density));
+    canvas.height = Math.max(1, Math.ceil(cssHeight * density));
+    const labelCtx = canvas.getContext('2d');
+    labelCtx.setTransform(density, 0, 0, density, 0, 0);
+    drawFlyingNoteLabel(labelCtx, label, cssWidth / 2, cssHeight / 2, fontSize, inkColor);
+    return cacheSet(noteLabelSpriteCache, key, { canvas, cssWidth, cssHeight }, 180);
+  }
+
+  function drawCachedNoteLabel(ctx, sprite, x, y) {
+    ctx.drawImage(
+      sprite.canvas,
+      0,
+      0,
+      sprite.canvas.width,
+      sprite.canvas.height,
+      x - sprite.cssWidth / 2,
+      y - sprite.cssHeight / 2,
+      sprite.cssWidth,
+      sprite.cssHeight
+    );
+  }
+
   function drawFallingNoteParticles(ctx, note, x, y, radius, noteHeight, color, alpha, particleCount, particleShadows, clock) {
     const { r, g, b, trail } = renderColorData(color);
     const notePhase = particlePhase(note.id);
@@ -2926,7 +3097,8 @@
   function renderRadialFrame(ctx, width, height) {
     const previewSeconds = 4.2 / state.speed;
     const { drumSize, scale, cx, cy } = radialGeometry(width, height);
-    const compactNotes = width <= 760 || window.matchMedia?.('(pointer: coarse)').matches;
+    const profile = visualPerformanceProfile(width);
+    const compactNotes = profile.name !== 'desktop';
     const geometryKey = `${cx.toFixed(2)}:${cy.toFixed(2)}:${scale.toFixed(4)}`;
     if (els.stageDrumWrap && state.stageDrumGeometryKey !== geometryKey) {
       els.stageDrumWrap.style.left = `${cx}px`;
@@ -2938,18 +3110,18 @@
     const started = playbackStarted();
     const activeIndices = new Set();
     const { start, end } = noteWindow(state.currentTime - 0.48, state.currentTime + previewSeconds);
-    const profile = visualPerformanceProfile(width);
     const visibleNotes = Math.max(1, end - start);
     const particleClock = state.particleQuality === 'none' ? 0 : performance.now() / 1000;
+    state.perfVisibleNotes = end - start;
     for (let index = start; index < end; index += 1) {
       const note = state.parsedNotes[index];
       const dt = note.time - state.currentTime;
       // Before the transport rolls, keep notes clear of the drum so every label is legible.
       if (!started && dt < 0.42) continue;
-      if (!started && highDrumSlotForLabel(note.label) >= 0) continue;
+      if (!started && note.highDrumSlot >= 0) continue;
 
-      const target = getHighDrumTarget(note.label, cx, cy)
-        || getPlacementTarget(getDrumPlacement(note.noteIndex), scale, cx, cy);
+      const target = getHighDrumTarget(note.label, cx, cy, note.highDrumSlot)
+        || getPlacementTarget(note.placement, scale, cx, cy);
       const progress = Math.max(0, Math.min(1.18, 1 - dt / previewSeconds));
       const eased = 1 - Math.pow(1 - Math.min(progress, 1), 1.25);
 
@@ -3013,7 +3185,7 @@
         companionClip = true;
       }
 
-      const color = noteColor(note.noteIndex);
+      const color = note.color;
       const { r, g, b, highlight, light } = renderColorData(color);
       const highlightR = highlight.r;
       const highlightG = highlight.g;
@@ -3041,20 +3213,21 @@
       const capsuleH = (target.high ? companionGem : mainCapsuleH) * growth * (1 + approach * 0.06);
       const angle = target.high ? 0 : Math.atan2(target.dy, target.dx);
       const noteIsMoving = state.playing && !state.countInActive && state.mode !== 'wait';
-      const maximumParticles = target.high ? profile.companionParticles : profile.radialParticles;
-      const particleCount = particleCountWithinBudget(maximumParticles, visibleNotes, profile);
 
-      if (noteIsMoving && particleCount) {
+      if (noteIsMoving) {
         // Companion trails are intentionally shorter and calmer. The diamond shape plus
         // the cool halo makes them distinct without replacing each tongue's note colour.
         const notePhase = particlePhase(note.id);
         const perpendicularX = -trailDy;
         const perpendicularY = trailDx;
-        drawCtx.save();
-        drawCtx.globalCompositeOperation = 'lighter';
-        drawCtx.shadowColor = target.high ? 'rgba(103,232,249,.9)' : `rgba(${r},${g},${b},.9)`;
-        if (!profile.particleShadows) drawCtx.shadowBlur = 0;
-        for (let particle = 0; particle < particleCount; particle++) {
+        const maximumParticles = target.high ? profile.companionParticles : profile.radialParticles;
+        const particleCount = particleCountWithinBudget(maximumParticles, visibleNotes, profile);
+        if (particleCount) {
+          drawCtx.save();
+          drawCtx.globalCompositeOperation = 'lighter';
+          drawCtx.shadowColor = target.high ? 'rgba(103,232,249,.9)' : `rgba(${r},${g},${b},.9)`;
+          if (!profile.particleShadows) drawCtx.shadowBlur = 0;
+          for (let particle = 0; particle < particleCount; particle++) {
           const template = PARTICLE_TEMPLATE[particle];
           const stream = template.stream;
           const streamIndex = template.streamIndex;
@@ -3086,8 +3259,9 @@
           drawCtx.beginPath();
           drawCtx.arc(particleX, particleY, particleSize, 0, Math.PI * 2);
           drawCtx.fill();
+          }
+          drawCtx.restore();
         }
-        drawCtx.restore();
       }
 
       // Impact ring as the note lands on its tongue.
@@ -3110,10 +3284,7 @@
       const spriteBlur = target.high
         ? 8 + approach * 16
         : (10 + approach * 24) * Math.max(0.8, scale);
-      const noteSprite = cachedNoteSprite(
-        target.high ? 'high' : 'radial', color,
-        capsuleW, capsuleH, spriteBlur, profile
-      );
+      const noteSprite = cachedNoteSprite(target.high ? 'high' : 'radial', color, capsuleW, capsuleH, spriteBlur, profile);
       drawCachedNoteSprite(drawCtx, noteSprite);
       drawCtx.restore();
 
@@ -3126,7 +3297,8 @@
         : compactNotes
           ? Math.max(13, Math.min(18, (14 + scale * 3) * growth))
           : Math.max(8, Math.min(15, (11 + scale * 2) * growth));
-      drawFlyingNoteLabel(drawCtx, note.label, x, y, labelSize, noteInkColor(color));
+      const labelSprite = cachedNoteLabel(note.label, labelSize, note.inkColor, profile);
+      drawCachedNoteLabel(drawCtx, labelSprite, x, y);
       drawCtx.restore();
 
       if (companionClip) drawCtx.restore();
@@ -3175,18 +3347,14 @@
     ctx.closePath();
   }
 
-  // Gradients and blurred shadows are expensive when recreated for every note on every
-  // frame. Cache a small set of two-pixel size buckets and draw them like sprites. Scaling
-  // between buckets is visually smooth, while the browser can reuse the completed glow.
   function cachedNoteSprite(kind, color, requestedWidth, requestedHeight, requestedBlur, profile) {
-    const width = Math.max(8, Math.round(requestedWidth / 2) * 2);
-    const height = Math.max(8, Math.round(requestedHeight / 2) * 2);
+    const width = Math.max(8, Math.round(requestedWidth / 4) * 4);
+    const height = Math.max(8, Math.round(requestedHeight / 4) * 4);
     const shadowBlur = Math.max(0, Math.round(requestedBlur / 4) * 4);
     const density = Math.min(window.devicePixelRatio || 1, profile.dpr || 2);
     const key = [kind, color, width, height, shadowBlur, density].join(':');
-    if (noteSpriteCache.has(key)) return noteSpriteCache.get(key);
-    if (noteSpriteCache.size > 280) noteSpriteCache.clear();
-
+    const existing = cacheGet(noteSpriteCache, key);
+    if (existing) return existing;
     const padding = Math.ceil(shadowBlur * 1.75 + 4);
     const cssWidth = width + padding * 2;
     const cssHeight = height + padding * 2;
@@ -3196,21 +3364,19 @@
     const spriteCtx = canvas.getContext('2d');
     spriteCtx.setTransform(density, 0, 0, density, 0, 0);
     spriteCtx.translate(cssWidth / 2, cssHeight / 2);
-
     const data = renderColorData(color);
-    if (kind === 'lane') {
-      spriteCtx.fillStyle = color;
-    } else {
-      const gradient = spriteCtx.createLinearGradient(-width * 0.42, -height * 0.45, width * 0.42, height * 0.45);
+    if (kind === 'lane') spriteCtx.fillStyle = color;
+    else {
+      const gradient = spriteCtx.createLinearGradient(-width * .42, -height * .45, width * .42, height * .45);
       gradient.addColorStop(0, `rgb(${data.highlight.r},${data.highlight.g},${data.highlight.b})`);
-      gradient.addColorStop(0.3, `rgb(${data.light.r},${data.light.g},${data.light.b})`);
-      gradient.addColorStop(0.62, `rgb(${data.r},${data.g},${data.b})`);
+      gradient.addColorStop(.3, `rgb(${data.light.r},${data.light.g},${data.light.b})`);
+      gradient.addColorStop(.62, `rgb(${data.r},${data.g},${data.b})`);
       gradient.addColorStop(1, `rgb(${data.light.r},${data.light.g},${data.light.b})`);
       spriteCtx.fillStyle = gradient;
     }
     spriteCtx.shadowColor = kind === 'high' ? 'rgba(103,232,249,.95)' : color;
     spriteCtx.shadowBlur = shadowBlur;
-    if (kind === 'high') roundedDiamond(spriteCtx, width, Math.max(6, width * 0.24));
+    if (kind === 'high') roundedDiamond(spriteCtx, width, Math.max(6, width * .24));
     else roundRect(spriteCtx, -width / 2, -height / 2, width, height, height / 2);
     spriteCtx.fill();
     spriteCtx.shadowBlur = 0;
@@ -3219,22 +3385,20 @@
       spriteCtx.lineWidth = kind === 'high' ? 1.25 : 1;
       spriteCtx.stroke();
     }
-
     const sprite = { canvas, cssWidth, cssHeight };
-    noteSpriteCache.set(key, sprite);
-    return sprite;
+    return cacheSet(noteSpriteCache, key, sprite, 320);
   }
 
   function drawCachedNoteSprite(ctx, sprite) {
-    ctx.drawImage(
-      sprite.canvas,
-      0, 0, sprite.canvas.width, sprite.canvas.height,
-      -sprite.cssWidth / 2, -sprite.cssHeight / 2, sprite.cssWidth, sprite.cssHeight
-    );
+    ctx.drawImage(sprite.canvas, 0, 0, sprite.canvas.width, sprite.canvas.height, -sprite.cssWidth / 2, -sprite.cssHeight / 2, sprite.cssWidth, sprite.cssHeight);
   }
 
   function soundBufferKey(midi, referencePitch = REFERENCE_PITCH) {
     return `${Number(midi)}:${Number(referencePitch).toFixed(3)}`;
+  }
+
+  function featuredStartupSong() {
+    return state.songs.find(song => String(song.title || '').toLocaleLowerCase().startsWith('the wind rises')) || null;
   }
 
   async function renderSoundBuffer(midi, referencePitch = REFERENCE_PITCH) {
@@ -3248,7 +3412,6 @@
     const osc1 = context.createOscillator();
     const osc2 = context.createOscillator();
     const filter = context.createBiquadFilter();
-
     osc1.type = 'sine';
     osc2.type = 'triangle';
     osc1.frequency.setValueAtTime(frequency, 0);
@@ -3270,30 +3433,85 @@
     return context.startRendering();
   }
 
-  function soundsForCurrentInstrument() {
-    const notes = [...(state.instrument?.notes || [])];
-    if (state.instrument?.count === 15) notes.push(...configuredCompanionNotes());
+  function soundCachePlan() {
     const referencePitch = state.instrument?.referencePitch || REFERENCE_PITCH;
     const unique = new Map();
-    notes.forEach(note => {
-      const midi = Number(note?.midi);
-      if (Number.isFinite(midi)) unique.set(soundBufferKey(midi, referencePitch), { midi, referencePitch });
-    });
-    return [...unique.values()];
+    const addMidi = midi => {
+      const value = Number(midi);
+      if (Number.isFinite(value)) unique.set(soundBufferKey(value, referencePitch), { midi: value, referencePitch });
+    };
+    const windRises = featuredStartupSong();
+    if (windRises) {
+      parseSequence(windRises.sequence, windRises.bpm).notes.forEach(note => addMidi(playableNoteAt(note.noteIndex)?.midi));
+    }
+    const featuredCount = unique.size;
+    (state.instrument?.notes || []).forEach(note => addMidi(note.midi));
+    if (state.instrument?.count === 15) configuredCompanionNotes().forEach(note => addMidi(note.midi));
+    return { sounds: [...unique.values()], featuredCount, featuredTitle: windRises ? 'The Wind Rises' : '' };
+  }
+
+  async function preWarmFeaturedVisuals() {
+    const song = featuredStartupSong();
+    const width = els.noteCanvas?.clientWidth || 0;
+    const height = els.noteCanvas?.clientHeight || 0;
+    if (!song || !width || !height) return { prepared: 0 };
+    const profile = visualPerformanceProfile(width);
+    const compactNotes = profile.name !== 'desktop';
+    const notes = preparePlaybackNotes(parseSequence(song.sequence, song.bpm).notes);
+    const unique = new Map();
+    notes.forEach(note => unique.set(`${note.noteIndex}:${note.label}`, note));
+    const geometry = radialGeometry(width, height);
+    const laneWidth = width / Math.max(1, playableNotes().length);
+    const companion = companionGeometry();
+    const growthSteps = compactNotes ? [.72, .96, 1.2] : [.62, .9, 1.12];
+    let prepared = 0;
+    for (const note of unique.values()) {
+      for (const growth of growthSteps) {
+        const laneBaseWidth = compactNotes
+          ? Math.max(40, Math.min(56, width * .12))
+          : Math.max(14, Math.min(56, laneWidth * .64));
+        const laneBaseHeight = compactNotes
+          ? Math.max(28, Math.min(36, width * .08))
+          : laneWidth < 30 ? 22 : 28;
+        cachedNoteSprite('lane', note.color, laneBaseWidth * growth, laneBaseHeight * growth, growth > 1.05 ? 24 : 10, profile);
+        const laneLabelSize = compactNotes
+          ? Math.max(13, Math.min(18, width * .04 * growth))
+          : laneWidth < 30 ? 10 : 13;
+        cachedNoteLabel(note.label, laneLabelSize, note.inkColor, profile);
+
+        const high = note.highDrumSlot >= 0;
+        const mainWidth = compactNotes
+          ? Math.max(40, Math.min(56, 44 * geometry.scale + 10))
+          : Math.max(32, Math.min(48, 38 * geometry.scale + 8));
+        const mainHeight = compactNotes
+          ? Math.max(28, Math.min(36, 30 * geometry.scale + 7))
+          : Math.max(22, Math.min(30, 24 * geometry.scale + 5));
+        const highSize = compactNotes
+          ? Math.max(28, Math.min(38, 24 + (companion?.drumSize || 120) * .075))
+          : Math.max(23, Math.min(34, 20 + (companion?.drumSize || 120) * .07));
+        const radialWidth = (high ? highSize : mainWidth) * growth;
+        const radialHeight = (high ? highSize : mainHeight) * growth;
+        cachedNoteSprite(high ? 'high' : 'radial', note.color, radialWidth, radialHeight, high ? 16 : 18, profile);
+        const radialLabelSize = high
+          ? compactNotes ? Math.max(12, Math.min(16, 13 * growth)) : Math.max(8, Math.min(13, 10 * growth))
+          : compactNotes ? Math.max(13, Math.min(18, (14 + geometry.scale * 3) * growth)) : Math.max(8, Math.min(15, (11 + geometry.scale * 2) * growth));
+        cachedNoteLabel(note.label, radialLabelSize, note.inkColor, profile);
+      }
+      prepared += 1;
+      if (prepared % 4 === 0) await new Promise(resolve => window.setTimeout(resolve, 0));
+    }
+    return { prepared };
   }
 
   async function preCacheInstrumentSounds(onProgress = null) {
     const generation = ++soundCacheGeneration;
-    const sounds = soundsForCurrentInstrument();
+    const plan = soundCachePlan();
     soundBufferCache.clear();
-    onProgress?.(0, sounds.length);
-    if (!(window.OfflineAudioContext || window.webkitOfflineAudioContext)) {
-      return { cached: 0, total: sounds.length, supported: false };
-    }
-
+    onProgress?.(0, plan.sounds.length, plan);
+    if (!(window.OfflineAudioContext || window.webkitOfflineAudioContext)) return { cached: 0, total: plan.sounds.length, supported: false };
     let cached = 0;
-    for (const sound of sounds) {
-      if (generation !== soundCacheGeneration) return { cached, total: sounds.length, cancelled: true };
+    for (const sound of plan.sounds) {
+      if (generation !== soundCacheGeneration) return { cached, total: plan.sounds.length, cancelled: true };
       try {
         const buffer = await renderSoundBuffer(sound.midi, sound.referencePitch);
         if (buffer && generation === soundCacheGeneration) {
@@ -3303,9 +3521,9 @@
       } catch (error) {
         console.warn(`Could not cache MIDI note ${sound.midi}:`, error);
       }
-      onProgress?.(cached, sounds.length);
+      onProgress?.(cached, plan.sounds.length, plan);
     }
-    return { cached, total: sounds.length, supported: true };
+    return { cached, total: plan.sounds.length, supported: true };
   }
 
   function initialiseAudioGraph() {
@@ -3318,8 +3536,6 @@
     return state.audioContext;
   }
 
-  // Mobile browsers sometimes require a real source to start inside the original touch
-  // gesture. A one-sample silent buffer unlocks the output without producing a click.
   function primeAudioFromGesture() {
     const context = initialiseAudioGraph();
     try {
@@ -3357,25 +3573,46 @@
     state.masterGain.gain.setValueAtTime(muted ? 0 : 1, now);
   }
 
-  async function playMidi(midi, referencePitch = 440, accent = false) {
+  function trackScheduledAudio(nodes, startTime) {
+    const record = { nodes, startTime };
+    state.scheduledAudioNodes.add(record);
+    const finishNode = nodes[0];
+    if (finishNode) finishNode.addEventListener('ended', () => state.scheduledAudioNodes.delete(record), { once: true });
+  }
+
+  function cancelFutureScheduledAudio() {
+    const now = state.audioContext?.currentTime ?? 0;
+    state.scheduledAudioNodes.forEach(record => {
+      if (record.startTime <= now + .005) return;
+      record.nodes.forEach(node => {
+        try { node.stop(); } catch {}
+      });
+      state.scheduledAudioNodes.delete(record);
+    });
+  }
+
+  async function playMidi(midi, referencePitch = 440, accent = false, delaySeconds = 0) {
     const requestedAt = performance.now();
-    const context = await ensureAudio();
-    // Never release an old mobile sound request after a delayed audio unlock.
-    if (performance.now() - requestedAt > 180) return false;
-    const now = context.currentTime;
+    let context = state.audioContext;
+    if (!context || context.state !== 'running') context = await ensureAudio();
+    const elapsedSeconds = (performance.now() - requestedAt) / 1000;
+    if (elapsedSeconds > Math.max(0, delaySeconds) + .18) return false;
+    const startTime = context.currentTime + Math.max(0, delaySeconds - elapsedSeconds);
     const cachedBuffer = soundBufferCache.get(soundBufferKey(midi, referencePitch));
     if (cachedBuffer) {
       const source = context.createBufferSource();
-      const level = context.createGain();
       source.buffer = cachedBuffer;
-      level.gain.setValueAtTime(accent ? 4 / 3 : 1, now);
-      source.connect(level).connect(state.masterGain || context.destination);
-      source.start(now);
+      if (accent) {
+        const level = context.createGain();
+        level.gain.setValueAtTime(4 / 3, startTime);
+        source.connect(level).connect(state.masterGain || context.destination);
+      } else {
+        source.connect(state.masterGain || context.destination);
+      }
+      source.start(startTime);
+      trackScheduledAudio([source], startTime);
       return true;
     }
-
-    // Fallback for browsers without OfflineAudioContext, or while a newly edited tuning
-    // is still being prepared in the background.
     const frequency = Number(referencePitch) * Math.pow(2, (Number(midi) - 69) / 12);
     const master = context.createGain();
     const osc1 = context.createOscillator();
@@ -3384,51 +3621,57 @@
 
     osc1.type = 'sine';
     osc2.type = 'triangle';
-    osc1.frequency.setValueAtTime(frequency, now);
-    osc2.frequency.setValueAtTime(frequency * 2.003, now);
+    osc1.frequency.setValueAtTime(frequency, startTime);
+    osc2.frequency.setValueAtTime(frequency * 2.003, startTime);
     filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(Math.min(3500, frequency * 7), now);
+    filter.frequency.setValueAtTime(Math.min(3500, frequency * 7), startTime);
     filter.Q.value = .8;
 
     const peak = accent ? .32 : .24;
-    master.gain.setValueAtTime(.0001, now);
-    master.gain.exponentialRampToValueAtTime(peak, now + .008);
-    master.gain.exponentialRampToValueAtTime(.0001, now + 1.35);
+    master.gain.setValueAtTime(.0001, startTime);
+    master.gain.exponentialRampToValueAtTime(peak, startTime + .008);
+    master.gain.exponentialRampToValueAtTime(.0001, startTime + 1.35);
 
     osc1.connect(filter);
     osc2.connect(filter);
     filter.connect(master);
     master.connect(state.masterGain || context.destination);
-    osc1.start(now);
-    osc2.start(now);
-    osc1.stop(now + 1.4);
-    osc2.stop(now + 1.4);
+    osc1.start(startTime);
+    osc2.start(startTime);
+    osc1.stop(startTime + 1.4);
+    osc2.stop(startTime + 1.4);
+    trackScheduledAudio([osc1, osc2], startTime);
     return true;
   }
 
-  async function playTone(noteIndex, accent = false) {
+  async function playTone(noteIndex, accent = false, delaySeconds = 0) {
     const midi = playableNoteAt(noteIndex)?.midi ?? 60;
-    return playMidi(midi, state.instrument.referencePitch || 440, accent);
+    return playMidi(midi, state.instrument.referencePitch || 440, accent, delaySeconds);
   }
 
-  async function playClick(accent) {
+  async function playClick(accent, delaySeconds = 0) {
     const requestedAt = performance.now();
-    const context = await ensureAudio();
-    if (performance.now() - requestedAt > 180) return false;
+    let context = state.audioContext;
+    if (!context || context.state !== 'running') context = await ensureAudio();
+    const elapsedSeconds = (performance.now() - requestedAt) / 1000;
+    if (elapsedSeconds > Math.max(0, delaySeconds) + .18) return false;
+    const startTime = context.currentTime + Math.max(0, delaySeconds - elapsedSeconds);
     const osc = context.createOscillator();
     const gain = context.createGain();
     osc.type = 'square';
     osc.frequency.value = accent ? 1300 : 900;
-    gain.gain.setValueAtTime(.08, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(.0001, context.currentTime + .045);
+    gain.gain.setValueAtTime(.08, startTime);
+    gain.gain.exponentialRampToValueAtTime(.0001, startTime + .045);
     osc.connect(gain).connect(state.masterGain || context.destination);
-    osc.start();
-    osc.stop(context.currentTime + .05);
+    osc.start(startTime);
+    osc.stop(startTime + .05);
+    trackScheduledAudio([osc], startTime);
     return true;
   }
 
   function flashPad(noteIndex, className = 'active', duration = 190, noteLabel = null) {
-    const pads = document.querySelectorAll(`.tongue[data-note-index="${noteIndex}"]`);
+    const pads = state.tonguePadsByNote.get(noteIndex)
+      || [...document.querySelectorAll(`.tongue[data-note-index="${noteIndex}"]`)];
     const routesToCompanion = noteLabel === null ? null : highDrumSlotForLabel(noteLabel) >= 0;
     pads.forEach(pad => {
       if (routesToCompanion !== null) {
@@ -3436,7 +3679,16 @@
         if (isCompanionPad !== routesToCompanion) return;
       }
       pad.classList.add(className);
-      window.setTimeout(() => pad.classList.remove(className), duration);
+      let timers = padFlashTimers.get(pad);
+      if (!timers) {
+        timers = new Map();
+        padFlashTimers.set(pad, timers);
+      }
+      window.clearTimeout(timers.get(className));
+      timers.set(className, window.setTimeout(() => {
+        pad.classList.remove(className);
+        timers.delete(className);
+      }, duration));
     });
   }
 
@@ -3749,7 +4001,7 @@
     els.clearABBtn.disabled = !hasA && !hasB;
     els.abLoopBtn.classList.toggle('active', state.sectionLoop);
     els.abLoopBtn.setAttribute('aria-pressed', String(state.sectionLoop));
-    els.abLoopBtn.textContent = state.sectionLoop ? 'A–B on' : 'Loop A–B';
+    els.abLoopBtn.textContent = state.sectionLoop ? 'A-B on' : 'Loop A-B';
 
     if (els.abMarkerA) {
       els.abMarkerA.hidden = !hasA || !state.duration;
@@ -3762,10 +4014,10 @@
 
     if (!allowed) {
       els.abLoopStatus.textContent = state.mode === 'wait'
-        ? 'A–B looping is available in Demo and Practice modes.'
-        : 'A–B looping is unavailable in Tuner mode.';
+        ? 'A-B looping is available in Demo and Practice modes.'
+        : 'A-B looping is unavailable in Tuner mode.';
     } else if (ready) {
-      els.abLoopStatus.textContent = `${state.sectionLoop ? 'Looping' : 'Section'} ${formatTime(state.loopA)} – ${formatTime(state.loopB)}.`;
+      els.abLoopStatus.textContent = `${state.sectionLoop ? 'Looping' : 'Section'} ${formatTime(state.loopA)} to ${formatTime(state.loopB)}.`;
     } else if (hasA) {
       els.abLoopStatus.textContent = `A is ${formatTime(state.loopA)}. Move the timeline and set B.`;
     } else if (hasB) {
@@ -3788,9 +4040,11 @@
       if (state.waitingIndex < 0) state.waitingIndex = state.parsedNotes.length;
     }
     if (state.playing && state.mode !== 'wait') {
+      cancelFutureScheduledAudio();
       state.playbackStartedAt = performance.now() - (target / state.speed) * 1000;
     }
     state.lastScheduledIndex = state.parsedNotes.findIndex(note => note.time >= target - 0.02) - 1;
+    state.lastVisualFlashIndex = state.lastScheduledIndex;
     state.lastMetronomeBeat = Math.floor(target / state.secondsPerBeat) - 1;
     updatePracticeUI();
     renderFrame();
@@ -3798,7 +4052,7 @@
 
   function setLoopPoint(which) {
     if (!sectionLoopAvailable() || !state.duration) {
-      showToast('A–B looping is available in Demo and Practice modes.', 'warning');
+      showToast('A-B looping is available in Demo and Practice modes.', 'warning');
       return;
     }
     const minimumGap = Math.max(0.4, (state.secondsPerBeat || 0.5) * 0.5);
@@ -3826,12 +4080,12 @@
     state.loopB = null;
     updateTransportUI();
     updateABLoopUI();
-    if (showMessage) showToast('A–B section cleared.', 'success');
+    if (showMessage) showToast('A-B section cleared.', 'success');
   }
 
   function toggleSectionLoop() {
     if (!sectionLoopAvailable()) {
-      showToast('Switch to Demo or Practice to use A–B looping.', 'warning');
+      showToast('Switch to Demo or Practice to use A-B looping.', 'warning');
       return;
     }
     const ready = Number.isFinite(state.loopA) && Number.isFinite(state.loopB) && state.loopB > state.loopA + 0.05;
@@ -3844,9 +4098,9 @@
       state.loop = false;
       clearLoopTimer();
       if (state.currentTime < state.loopA || state.currentTime >= state.loopB) seekToTime(state.loopA, { clearSectionHits: true });
-      showToast(`Looping ${formatTime(state.loopA)} – ${formatTime(state.loopB)}.`, 'success');
+      showToast(`Looping ${formatTime(state.loopA)} to ${formatTime(state.loopB)}.`, 'success');
     } else {
-      showToast('A–B loop paused. Your A and B points are saved.', 'success');
+      showToast('A-B loop paused. Your A and B points are saved.', 'success');
     }
     updateTransportUI();
     updateABLoopUI();
@@ -3860,7 +4114,9 @@
       if (note.time >= state.loopA - 0.02 && note.time < state.loopB + 0.02) state.hitNotes.delete(note.id);
     });
     state.playbackStartedAt = now - (state.currentTime / state.speed) * 1000;
+    cancelFutureScheduledAudio();
     state.lastScheduledIndex = state.parsedNotes.findIndex(note => note.time >= state.currentTime - 0.02) - 1;
+    state.lastVisualFlashIndex = state.lastScheduledIndex;
     state.lastMetronomeBeat = Math.floor(state.currentTime / state.secondsPerBeat) - 1;
     updatePracticeUI();
     renderFrame();
@@ -3939,6 +4195,7 @@
 
   function showSessionResults() {
     if (!els.resultDialog) return;
+    if (walkthroughKind === 'main' && walkthroughPreviewState && !els.tourOverlay?.hidden) return;
     const song = selectedSong();
     const title = songTitleParts(song?.title || 'Song').displayTitle;
     const training = state.mode === 'practice' || state.mode === 'wait';
@@ -3952,7 +4209,7 @@
     if (training) {
       els.resultSummary.textContent = missed.length
         ? `${missed.length} ${missed.length === 1 ? 'note needs' : 'notes need'} another look.`
-        : 'Great run — no missed notes to practise.';
+        : 'Great run. No missed notes to practise.';
       els.resultStats.hidden = false;
       els.resultHitValue.textContent = `${Math.min(hitCount, total)}/${total}`;
       els.resultAccuracyValue.textContent = `${inputAccuracy}%`;
@@ -4009,7 +4266,7 @@
     seekToTime(start, { clearSectionHits: true });
     updateTransportUI();
     updateABLoopUI();
-    showToast(`Practising missed section ${formatTime(start)} – ${formatTime(end)}.`, 'success');
+    showToast(`Practising missed section ${formatTime(start)} to ${formatTime(end)}.`, 'success');
     togglePlayback().catch(reportPlaybackStartError);
   }
 
@@ -4076,6 +4333,7 @@
     const playbackNow = performance.now();
     state.playbackStartedAt = playbackNow - (state.currentTime / state.speed) * 1000;
     state.lastScheduledIndex = state.parsedNotes.findIndex(n => n.time >= state.currentTime - .02) - 1;
+    state.lastVisualFlashIndex = state.lastScheduledIndex;
     state.lastMetronomeBeat = Math.floor(state.currentTime / state.secondsPerBeat) - 1;
     state.lastVisualAt = 0;
     state.lastUiAt = 0;
@@ -4083,6 +4341,7 @@
     state.lastCompanionUiAt = 0;
     resetVisualPerformanceMonitor(playbackNow);
     updateTransportUI();
+    startAudioScheduler();
     cancelAnimationFrame(state.animationId);
     state.animationId = requestAnimationFrame(tick);
   }
@@ -4090,10 +4349,9 @@
   function tick(now) {
     if (!state.playing || state.mode === 'wait' || document.hidden) return;
     state.currentTime = Math.min(state.duration, ((now - state.playbackStartedAt) / 1000) * state.speed);
-    scheduleDueAudio();
-    if (state.metronome) scheduleMetronome();
-    // Audio stays checked every animation frame. DOM labels, the foreground notes and the
-    // animated backdrop each have their own budget, so a dense song cannot delay sound.
+    flashDueVisualNotes();
+    // Sound is scheduled by a separate look-ahead clock. DOM labels, foreground notes,
+    // and the animated backdrop keep independent budgets here.
     const profile = visualPerformanceProfile();
     if (!state.lastUiAt || now - state.lastUiAt >= profile.uiInterval) {
       state.lastUiAt = now;
@@ -4103,7 +4361,9 @@
       state.lastVisualAt = now;
       const renderStartedAt = performance.now();
       renderFrame();
-      monitorVisualPerformance(renderStartedAt, performance.now(), profile);
+      const renderFinishedAt = performance.now();
+      monitorVisualPerformance(renderStartedAt, renderFinishedAt, profile);
+      recordPerformanceDiagnostics(renderStartedAt, renderFinishedAt, profile);
     }
     if (state.sectionLoop && Number.isFinite(state.loopB) && state.currentTime >= state.loopB - .002) {
       restartSectionLoopCycle(now);
@@ -4117,25 +4377,70 @@
     state.animationId = requestAnimationFrame(tick);
   }
 
-  function scheduleDueAudio() {
+  function scheduleDueAudio(playbackTime = state.currentTime) {
+    if (!state.playing || state.mode === 'wait' || state.mode === 'tuner' || document.hidden) return;
+    const songHorizon = AUDIO_LOOKAHEAD_SECONDS * state.speed;
+    const sectionEnd = state.sectionLoop && Number.isFinite(state.loopB) ? state.loopB - .002 : Infinity;
+    const horizon = Math.min(playbackTime + songHorizon, sectionEnd);
     if (state.mode === 'practice') return;
     for (let i = state.lastScheduledIndex + 1; i < state.parsedNotes.length; i++) {
       const note = state.parsedNotes[i];
-      if (note.time <= state.currentTime + .03) {
-        playTone(note.noteIndex).catch(() => {});
-        const flashDuration = Math.max(170, Math.min(420, note.duration * 450));
-        flashPad(note.noteIndex, 'active', flashDuration, note.label);
+      if (note.time <= horizon) {
+        const delaySeconds = Math.max(0, (note.time - playbackTime) / state.speed);
+        playMidi(note.midi, state.instrument.referencePitch || 440, false, delaySeconds).catch(() => {});
         state.lastScheduledIndex = i;
       } else break;
     }
   }
 
-  function scheduleMetronome() {
-    const beat = Math.floor(state.currentTime / state.secondsPerBeat);
-    if (beat > state.lastMetronomeBeat) {
-      playClick(beat % 4 === 0).catch(() => {});
+  function scheduleMetronome(playbackTime = state.currentTime) {
+    if (!state.metronome || !state.playing || !state.secondsPerBeat || document.hidden) return;
+    const songHorizon = AUDIO_LOOKAHEAD_SECONDS * state.speed;
+    const sectionEnd = state.sectionLoop && Number.isFinite(state.loopB) ? state.loopB - .002 : Infinity;
+    const horizon = Math.min(playbackTime + songHorizon, sectionEnd);
+    const lastBeat = Math.floor(horizon / state.secondsPerBeat);
+    for (let beat = state.lastMetronomeBeat + 1; beat <= lastBeat; beat += 1) {
+      const beatTime = beat * state.secondsPerBeat;
+      if (beatTime < playbackTime - .02) {
+        state.lastMetronomeBeat = beat;
+        continue;
+      }
+      const delaySeconds = Math.max(0, (beatTime - playbackTime) / state.speed);
+      playClick(beat % 4 === 0, delaySeconds).catch(() => {});
       state.lastMetronomeBeat = beat;
     }
+  }
+
+  function flashDueVisualNotes() {
+    if (state.mode === 'practice' || state.mode === 'wait' || state.mode === 'tuner') return;
+    for (let index = state.lastVisualFlashIndex + 1; index < state.parsedNotes.length; index += 1) {
+      const note = state.parsedNotes[index];
+      if (note.time > state.currentTime + .018) break;
+      const flashDuration = Math.max(170, Math.min(420, note.duration * 450));
+      flashPad(note.noteIndex, 'active', flashDuration, note.label);
+      state.lastVisualFlashIndex = index;
+    }
+  }
+
+  function runAudioScheduler() {
+    if (!state.playing || document.hidden) return;
+    const playbackTime = Math.min(state.duration, ((performance.now() - state.playbackStartedAt) / 1000) * state.speed);
+    scheduleDueAudio(playbackTime);
+    scheduleMetronome(playbackTime);
+  }
+
+  function startAudioScheduler() {
+    clearInterval(state.audioSchedulerId);
+    state.audioSchedulerId = 0;
+    if (state.mode === 'wait' || state.mode === 'tuner') return;
+    runAudioScheduler();
+    state.audioSchedulerId = window.setInterval(runAudioScheduler, AUDIO_SCHEDULER_INTERVAL_MS);
+  }
+
+  function stopAudioScheduler() {
+    clearInterval(state.audioSchedulerId);
+    state.audioSchedulerId = 0;
+    cancelFutureScheduledAudio();
   }
 
   function clearLoopTimer() {
@@ -4169,6 +4474,7 @@
 
   function pausePlayback() {
     clearLoopTimer();
+    stopAudioScheduler();
     state.playing = false;
     state.countInActive = false;
     cancelAnimationFrame(state.animationId);
@@ -4183,10 +4489,12 @@
 
   function restartSong() {
     clearLoopTimer();
+    stopAudioScheduler();
     state.playing = false;
     state.currentTime = 0;
     state.pausedAt = 0;
     state.lastScheduledIndex = -1;
+    state.lastVisualFlashIndex = -1;
     state.lastMetronomeBeat = -1;
     state.score = 0;
     state.attempts = 0;
@@ -4201,11 +4509,20 @@
   }
 
   function finishPlayback() {
+    stopAudioScheduler();
     state.playing = false;
     state.currentTime = state.duration;
     updateTransportUI();
     updatePracticeUI();
     renderFrame();
+    if (walkthroughKind === 'main' && walkthroughPreviewState && !els.tourOverlay?.hidden && walkthroughStepIndex === 0) {
+      state.loopTimer = window.setTimeout(() => {
+        if (walkthroughKind !== 'main' || !walkthroughPreviewState || els.tourOverlay?.hidden || walkthroughStepIndex !== 0) return;
+        restartSong();
+        startPlaybackClock();
+      }, 650);
+      return;
+    }
     if (state.loop && state.mode !== 'tuner') {
       state.loopTimer = window.setTimeout(startNextLoop, 700);
       return;
@@ -5682,8 +5999,9 @@
       name: `${count}-note ${displayName} drum`,
       notes: labels.map((label, i) => ({ label, midi: midis[i], color: colors[i] }))
     };
+    invalidateInstrumentRuntimeCaches();
     saveInstrument();
-    preCacheInstrumentSounds().catch(error => console.warn('Sound cache refresh failed:', error));
+    preCacheInstrumentSounds().catch(error => console.warn('Could not refresh the sound cache:', error));
     els.settingsDialog.close();
     renderInstrument();
     selectSong(state.selectedId);
@@ -5765,7 +6083,9 @@
   }
 
   function startDemoCatalogPolling() {
-    window.setInterval(checkDemoCatalogUpdate, 2500);
+    if (state.catalogPollTimer) return;
+    state.catalogPollTimer = window.setInterval(checkDemoCatalogUpdate, 45000);
+    window.addEventListener('focus', () => checkDemoCatalogUpdate());
   }
 
   function modeWalkthroughsSeen() {
@@ -5834,18 +6154,17 @@
     els.tourFocusRing.style.width = `${focusWidth}px`;
     els.tourFocusRing.style.height = `${focusHeight}px`;
 
-    // Four small rectangles are much cheaper to repaint than a 9,999px spread shadow.
     const setShade = (element, left, top, width, height) => {
       if (!element) return;
-      element.style.left = `${left}px`;
-      element.style.top = `${top}px`;
+      element.style.left = `${Math.max(0, left)}px`;
+      element.style.top = `${Math.max(0, top)}px`;
       element.style.width = `${Math.max(0, width)}px`;
       element.style.height = `${Math.max(0, height)}px`;
     };
     setShade(els.tourShadeTop, 0, 0, window.innerWidth, focusTop);
+    setShade(els.tourShadeRight, focusRight, focusTop, window.innerWidth - focusRight, focusHeight);
     setShade(els.tourShadeBottom, 0, focusBottom, window.innerWidth, window.innerHeight - focusBottom);
     setShade(els.tourShadeLeft, 0, focusTop, focusLeft, focusHeight);
-    setShade(els.tourShadeRight, focusRight, focusTop, window.innerWidth - focusRight, focusHeight);
 
     window.requestAnimationFrame(() => {
       const cardWidth = els.tourCard.offsetWidth || 350;
@@ -5909,6 +6228,7 @@
 
   function startWalkthrough(kind = 'main') {
     if (!els.tourOverlay || !els.tourOverlay.hidden) return;
+    if (els.resultDialog?.open) els.resultDialog.close();
     walkthroughKind = MODE_WALKTHROUGH_STEPS[kind] ? kind : 'main';
     activeWalkthroughSteps = walkthroughKind === 'main' ? WALKTHROUGH_STEPS : MODE_WALKTHROUGH_STEPS[walkthroughKind];
     walkthroughPreviewState = null;
@@ -6269,6 +6589,7 @@
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         stopAmbientLoop();
+        stopAudioScheduler();
         setAudioMuted(true);
         if (state.animationId) {
           cancelAnimationFrame(state.animationId);
@@ -6284,6 +6605,7 @@
         const now = performance.now();
         state.currentTime = Math.min(state.duration, ((now - state.playbackStartedAt) / 1000) * state.speed);
         state.lastScheduledIndex = noteIndexAtOrAfter(state.currentTime + 0.001) - 1;
+        state.lastVisualFlashIndex = state.lastScheduledIndex;
         state.lastMetronomeBeat = Math.floor(state.currentTime / state.secondsPerBeat);
         state.lastVisualAt = 0;
         updatePracticeUI();
@@ -6293,6 +6615,7 @@
           finishPlayback();
         } else {
           setAudioMuted(false);
+          startAudioScheduler();
           state.animationId = requestAnimationFrame(tick);
         }
       } else {
@@ -6306,51 +6629,56 @@
     }
   }
 
-  function updateStartupProgress(cached, total) {
-    const complete = total ? Math.round((cached / total) * 100) : 100;
-    if (els.startupLoaderFill) els.startupLoaderFill.style.width = `${Math.max(3, complete)}%`;
-    if (els.startupLoaderStatus) els.startupLoaderStatus.textContent = 'Pre-caching note sounds';
-    if (els.startupLoaderCount) {
-      els.startupLoaderCount.textContent = total ? `${cached} of ${total} notes ready` : 'Sounds ready';
+  function updateStartupProgress(cached, total, plan) {
+    if (!els.startupLoader) return;
+    const complete = total ? Math.min(100, Math.max(3, Math.round((cached / total) * 100))) : 100;
+    els.startupLoaderFill.style.width = `${complete}%`;
+    if (plan?.featuredTitle && cached < plan.featuredCount) {
+      els.startupLoaderStatus.textContent = `Preparing ${plan.featuredTitle}`;
+    } else if (cached < total) {
+      els.startupLoaderStatus.textContent = 'Preparing remaining drum sounds';
     }
+    els.startupLoaderCount.textContent = total ? `${cached} of ${total} sounds ready` : 'Sound cache ready';
   }
 
   function revealLoadedApp() {
     document.body.classList.remove('app-loading');
     els.startupLoader?.classList.add('done');
-    window.setTimeout(() => {
-      if (els.startupLoader) els.startupLoader.hidden = true;
-    }, 280);
+    window.setTimeout(() => els.startupLoader?.remove(), 300);
   }
 
   async function init() {
     loadData();
     bindEvents();
+    initialisePerformanceDiagnostics();
     renderInstrument();
     updateMicUI();
     renderSongList();
     selectSong(state.selectedId);
+    const startedAt = performance.now();
+    let timedOut = false;
     const cacheTask = preCacheInstrumentSounds(updateStartupProgress).catch(error => {
-      console.warn('Sound pre-cache was unavailable:', error);
-      return { cached: 0, total: soundsForCurrentInstrument().length, supported: false };
+      console.warn('Could not prepare the sound cache:', error);
+      return null;
     });
-    // Avoid a flash on fast computers, but never hold the application for more than five
-    // seconds. A very slow device keeps the buffers already completed and stops there.
-    let startupLimitTimer = 0;
-    const startupLimit = new Promise(resolve => {
-      startupLimitTimer = window.setTimeout(() => {
-        soundCacheGeneration += 1;
-        resolve({ timedOut: true });
+    let cacheTimeoutId = 0;
+    const cacheTimeout = new Promise(resolve => {
+      cacheTimeoutId = window.setTimeout(() => {
+      timedOut = true;
+      soundCacheGeneration += 1;
+      resolve(null);
       }, 5000);
     });
-    await Promise.race([
-      Promise.all([cacheTask, new Promise(resolve => window.setTimeout(resolve, 320))]),
-      startupLimit
-    ]);
-    window.clearTimeout(startupLimitTimer);
+    await Promise.race([cacheTask, cacheTimeout]);
+    window.clearTimeout(cacheTimeoutId);
+    if (els.startupLoaderStatus) els.startupLoaderStatus.textContent = 'Preparing first song visuals';
+    if (els.startupLoaderCount) els.startupLoaderCount.textContent = 'Preparing notes and octave marks';
+    await preWarmFeaturedVisuals().catch(error => console.warn('Could not prepare the visual cache:', error));
+    const remainingDelay = Math.max(0, 320 - (performance.now() - startedAt));
+    if (remainingDelay) await new Promise(resolve => window.setTimeout(resolve, remainingDelay));
     if (els.startupLoaderStatus) els.startupLoaderStatus.textContent = 'Ready to play';
     if (els.startupLoaderFill) els.startupLoaderFill.style.width = '100%';
-    if (els.startupLoaderCount) els.startupLoaderCount.textContent = 'Sound cache ready';
+    if (els.startupLoaderCount) els.startupLoaderCount.textContent = timedOut ? 'Ready with sound fallback' : 'Sound cache ready';
     revealLoadedApp();
     startDemoCatalogPolling();
     maybeStartWalkthrough();
@@ -6372,7 +6700,8 @@
   }
 
   init().catch(error => {
-    console.error('Trainer startup failed:', error);
+    console.error('The app could not finish starting:', error);
     revealLoadedApp();
+    showToast('The app started with limited sound preparation.', 'warning');
   });
 })();
