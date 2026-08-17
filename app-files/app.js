@@ -461,7 +461,10 @@
       const noteIndex = extraIndex++;
       return {
         ...preset,
-        color: defaultNoteColor(noteIndex),
+        // Keep the companion tongue's configured color. The previous fallback replaced
+        // custom companion colors with a palette color as soon as the note was routed
+        // into the playable-note list.
+        color: normaliseColor(preset.color, 15 + slot),
         noteIndex,
         slot,
         shared: false,
@@ -1603,14 +1606,18 @@
 
   function preparePlaybackNotes(notes) {
     return notes.map(note => {
-      const color = note.color;
+      // Song data stores musical labels, not display colors. Resolve every playback note
+      // against the currently configured physical tongue so flying notes, particles,
+      // labels and impact effects always inherit that tongue's color.
+      const playable = playableNoteAt(note.noteIndex);
+      const color = normaliseColor(playable?.color, note.noteIndex);
       return {
         ...note,
         color,
         inkColor: noteInkColor(color),
         highDrumSlot: highDrumSlotForLabel(note.label),
         placement: getDrumPlacement(note.noteIndex),
-        midi: playableNoteAt(note.noteIndex)?.midi ?? 60
+        midi: playable?.midi ?? 60
       };
     });
   }
@@ -3450,22 +3457,44 @@
     return { sounds: [...unique.values()], featuredCount, featuredTitle: windRises ? 'The Wind Rises' : '' };
   }
 
-  async function preWarmFeaturedVisuals() {
-    const song = featuredStartupSong();
+  async function preWarmAllNoteVisuals(onProgress = null) {
     const width = els.noteCanvas?.clientWidth || 0;
     const height = els.noteCanvas?.clientHeight || 0;
-    if (!song || !width || !height) return { prepared: 0 };
+    if (!width || !height) return { prepared: 0, total: 0 };
+
     const profile = visualPerformanceProfile(width);
     const compactNotes = profile.name !== 'desktop';
-    const notes = preparePlaybackNotes(parseSequence(song.sequence, song.bpm).notes);
-    const unique = new Map();
-    notes.forEach(note => unique.set(`${note.noteIndex}:${note.label}`, note));
     const geometry = radialGeometry(width, height);
     const laneWidth = width / Math.max(1, playableNotes().length);
     const companion = companionGeometry();
     const growthSteps = compactNotes ? [.72, .96, 1.2] : [.62, .9, 1.12];
+
+    // Warm the first song first, then every remaining tongue. This keeps The Wind Rises
+    // startup-friendly without leaving any other tongue color/label uncached before the tour.
+    const ordered = [];
+    const seen = new Set();
+    const addNote = note => {
+      if (!note || !Number.isInteger(note.noteIndex)) return;
+      const key = `${note.noteIndex}:${note.label}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const playable = playableNoteAt(note.noteIndex);
+      const color = normaliseColor(playable?.color, note.noteIndex);
+      ordered.push({
+        ...note,
+        color,
+        inkColor: noteInkColor(color),
+        highDrumSlot: highDrumSlotForLabel(note.label)
+      });
+    };
+
+    const featured = featuredStartupSong();
+    if (featured) preparePlaybackNotes(parseSequence(featured.sequence, featured.bpm).notes).forEach(addNote);
+    playableNotes().forEach(note => addNote({ noteIndex: note.noteIndex, label: note.label }));
+
     let prepared = 0;
-    for (const note of unique.values()) {
+    onProgress?.(prepared, ordered.length);
+    for (const note of ordered) {
       for (const growth of growthSteps) {
         const laneBaseWidth = compactNotes
           ? Math.max(40, Math.min(56, width * .12))
@@ -3498,9 +3527,10 @@
         cachedNoteLabel(note.label, radialLabelSize, note.inkColor, profile);
       }
       prepared += 1;
+      onProgress?.(prepared, ordered.length);
       if (prepared % 4 === 0) await new Promise(resolve => window.setTimeout(resolve, 0));
     }
-    return { prepared };
+    return { prepared, total: ordered.length };
   }
 
   async function preCacheInstrumentSounds(onProgress = null) {
@@ -6631,7 +6661,7 @@
 
   function updateStartupProgress(cached, total, plan) {
     if (!els.startupLoader) return;
-    const complete = total ? Math.min(100, Math.max(3, Math.round((cached / total) * 100))) : 100;
+    const complete = total ? Math.min(82, Math.max(3, Math.round((cached / total) * 82))) : 82;
     els.startupLoaderFill.style.width = `${complete}%`;
     if (plan?.featuredTitle && cached < plan.featuredCount) {
       els.startupLoaderStatus.textContent = `Preparing ${plan.featuredTitle}`;
@@ -6639,6 +6669,16 @@
       els.startupLoaderStatus.textContent = 'Preparing remaining drum sounds';
     }
     els.startupLoaderCount.textContent = total ? `${cached} of ${total} sounds ready` : 'Sound cache ready';
+  }
+
+  function updateStartupVisualProgress(prepared, total) {
+    if (!els.startupLoader) return;
+    const ratio = total ? prepared / total : 1;
+    // Sound preparation owns the first 82%; the final 18% is reserved for note sprites.
+    const complete = Math.round(82 + Math.max(0, Math.min(1, ratio)) * 18);
+    els.startupLoaderFill.style.width = `${complete}%`;
+    els.startupLoaderStatus.textContent = 'Preparing every note color';
+    els.startupLoaderCount.textContent = total ? `${prepared} of ${total} note visuals ready` : 'Note visuals ready';
   }
 
   function revealLoadedApp() {
@@ -6656,31 +6696,27 @@
     renderSongList();
     selectSong(state.selectedId);
     const startedAt = performance.now();
-    let timedOut = false;
-    const cacheTask = preCacheInstrumentSounds(updateStartupProgress).catch(error => {
+    let soundResult = null;
+    try {
+      // Do not reveal the walkthrough until the full current instrument has been rendered
+      // into the offline sound cache. This avoids first-touch synthesis spikes during tour.
+      soundResult = await preCacheInstrumentSounds(updateStartupProgress);
+    } catch (error) {
       console.warn('Could not prepare the sound cache:', error);
-      return null;
-    });
-    let cacheTimeoutId = 0;
-    const cacheTimeout = new Promise(resolve => {
-      cacheTimeoutId = window.setTimeout(() => {
-      timedOut = true;
-      soundCacheGeneration += 1;
-      resolve(null);
-      }, 5000);
-    });
-    await Promise.race([cacheTask, cacheTimeout]);
-    window.clearTimeout(cacheTimeoutId);
-    if (els.startupLoaderStatus) els.startupLoaderStatus.textContent = 'Preparing first song visuals';
-    if (els.startupLoaderCount) els.startupLoaderCount.textContent = 'Preparing notes and octave marks';
-    await preWarmFeaturedVisuals().catch(error => console.warn('Could not prepare the visual cache:', error));
+    }
+    await preWarmAllNoteVisuals(updateStartupVisualProgress)
+      .catch(error => console.warn('Could not prepare the complete visual cache:', error));
     const remainingDelay = Math.max(0, 320 - (performance.now() - startedAt));
     if (remainingDelay) await new Promise(resolve => window.setTimeout(resolve, remainingDelay));
     if (els.startupLoaderStatus) els.startupLoaderStatus.textContent = 'Ready to play';
     if (els.startupLoaderFill) els.startupLoaderFill.style.width = '100%';
-    if (els.startupLoaderCount) els.startupLoaderCount.textContent = timedOut ? 'Ready with sound fallback' : 'Sound cache ready';
+    if (els.startupLoaderCount) {
+      const complete = soundResult && soundResult.supported && !soundResult.cancelled && soundResult.cached === soundResult.total;
+      els.startupLoaderCount.textContent = complete ? 'All notes and sounds ready' : 'Notes ready · sound fallback available';
+    }
     revealLoadedApp();
     startDemoCatalogPolling();
+    // Walkthrough starts only after both preload passes above have completed.
     maybeStartWalkthrough();
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {
       const hadController = Boolean(navigator.serviceWorker.controller);
