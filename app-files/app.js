@@ -2216,7 +2216,11 @@
   function configureParticleQuality(profile, force = false) {
     if (!force && state.particleProfileName === profile.name && state.particleQuality) return;
     state.particleProfileName = profile.name;
-    state.backgroundRateScale = 1;
+    // Start touch devices on the profile they almost always settle on anyway. Previously
+    // phones/tablets began too ambitiously, spent the first few seconds dropping frames,
+    // then the adaptive monitor reduced backdrop work. Starting at the proven baseline
+    // keeps the very first walkthrough notes as smooth as later ones.
+    state.backgroundRateScale = profile.name === 'phone' ? 2 : profile.name === 'tablet' ? 1.35 : 1;
     setParticleQuality(profile.particleQualityCap);
     resetVisualPerformanceMonitor();
   }
@@ -2625,20 +2629,18 @@
     ctx.globalCompositeOperation = 'lighter';
 
     if (compactLayout) {
-      // The backdrop canvas is now locked to the stage size, so this broad compact-screen
-      // light stays centred on the drum. Keep it to one soft gradient for mobile performance.
+      // Cache the compact glow once. Creating a multi-stop radial gradient during every
+      // backdrop refresh caused a noticeable first-play warm-up on some mobile GPUs.
       const breathe = 1 + Math.sin(now * 0.42) * 0.035;
       const radius = size * 0.73 * breathe;
-      const gradient = ctx.createRadialGradient(cx, cy, size * 0.22, cx, cy, radius);
-      gradient.addColorStop(0, 'rgba(112,143,255,.17)');
-      gradient.addColorStop(0.34, 'rgba(99,130,246,.115)');
-      gradient.addColorStop(0.66, 'rgba(99,130,246,.05)');
-      gradient.addColorStop(0.86, 'rgba(94,234,212,.016)');
-      gradient.addColorStop(1, 'rgba(109,130,246,0)');
-      ctx.fillStyle = gradient;
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.fill();
+      const texture = cachedGlowTexture('amoeba:compact', [
+        [0, 'rgba(112,143,255,.17)'],
+        [.34, 'rgba(99,130,246,.115)'],
+        [.66, 'rgba(99,130,246,.05)'],
+        [.86, 'rgba(94,234,212,.016)'],
+        [1, 'rgba(109,130,246,0)']
+      ]);
+      drawGlowTexture(ctx, texture, cx, cy, radius);
       ctx.restore();
       return;
     }
@@ -6661,7 +6663,7 @@
 
   function updateStartupProgress(cached, total, plan) {
     if (!els.startupLoader) return;
-    const complete = total ? Math.min(82, Math.max(3, Math.round((cached / total) * 82))) : 82;
+    const complete = total ? Math.min(76, Math.max(3, Math.round((cached / total) * 76))) : 76;
     els.startupLoaderFill.style.width = `${complete}%`;
     if (plan?.featuredTitle && cached < plan.featuredCount) {
       els.startupLoaderStatus.textContent = `Preparing ${plan.featuredTitle}`;
@@ -6674,11 +6676,130 @@
   function updateStartupVisualProgress(prepared, total) {
     if (!els.startupLoader) return;
     const ratio = total ? prepared / total : 1;
-    // Sound preparation owns the first 82%; the final 18% is reserved for note sprites.
-    const complete = Math.round(82 + Math.max(0, Math.min(1, ratio)) * 18);
+    // Sound preparation owns the first 76%; note sprites take us to 92%.
+    const complete = Math.round(76 + Math.max(0, Math.min(1, ratio)) * 16);
     els.startupLoaderFill.style.width = `${complete}%`;
     els.startupLoaderStatus.textContent = 'Preparing every note color';
     els.startupLoaderCount.textContent = total ? `${prepared} of ${total} note visuals ready` : 'Note visuals ready';
+  }
+
+  function updateStartupRuntimeProgress(step, total, message = 'Warming animation engine') {
+    if (!els.startupLoader) return;
+    const ratio = total ? Math.max(0, Math.min(1, step / total)) : 1;
+    const complete = Math.round(92 + ratio * 8);
+    els.startupLoaderFill.style.width = `${complete}%`;
+    els.startupLoaderStatus.textContent = message;
+    els.startupLoaderCount.textContent = total ? `${step} of ${total} animation passes ready` : 'Animation engine ready';
+  }
+
+  function nextStartupFrame() {
+    return new Promise(resolve => window.requestAnimationFrame(() => resolve()));
+  }
+
+  async function preWarmRuntimeVisualPipeline(onProgress = null) {
+    const width = els.noteCanvas?.clientWidth || 0;
+    const height = els.noteCanvas?.clientHeight || 0;
+    if (!width || !height) return { frames: 0, profile: 'unknown', averageMs: 0 };
+
+    // Establish the correct phone/tablet/desktop canvas profile *before* any benchmark.
+    // resizeCanvas also allocates both backing buffers, builds stars and creates guide layers.
+    resizeCanvas();
+    const profile = visualPerformanceProfile(width);
+    configureParticleQuality(profile, true);
+
+    const snapshot = {
+      parsedNotes: state.parsedNotes,
+      duration: state.duration,
+      secondsPerBeat: state.secondsPerBeat,
+      totalBeats: state.totalBeats,
+      currentTime: state.currentTime,
+      playing: state.playing,
+      countInActive: state.countInActive,
+      mode: state.mode,
+      lastFrameAt: state.lastFrameAt,
+      lastVisualAt: state.lastVisualAt,
+      lastUiAt: state.lastUiAt,
+      lastBackdropAt: state.lastBackdropAt,
+      lastCompanionUiAt: state.lastCompanionUiAt,
+      backdropMode: state.backdropMode,
+      expectedPadSignature: state.expectedPadSignature,
+      expectedPadAnchor: state.expectedPadAnchor
+    };
+
+    const featured = featuredStartupSong() || selectedSong();
+    if (featured) {
+      const parsed = parseSequence(featured.sequence, featured.bpm);
+      state.parsedNotes = preparePlaybackNotes(parsed.notes);
+      state.duration = parsed.duration;
+      state.secondsPerBeat = parsed.secondsPerBeat;
+      state.totalBeats = parsed.totalBeats;
+    }
+    state.mode = 'demo';
+    state.playing = true;
+    state.countInActive = false;
+    state.lastBackdropAt = 0;
+    state.lastCompanionUiAt = 0;
+    state.backdropMode = '';
+    state.lastFrameAt = 0;
+
+    // Sample moments with approaching notes rather than an empty stage. This warms the same
+    // sprite compositing, guide glow, particle path, companion layout and canvas code the
+    // first walkthrough step actually uses.
+    const duration = Math.max(.1, state.duration || 8);
+    const candidates = state.parsedNotes.length
+      ? state.parsedNotes.slice(0, 24).map(note => Math.max(0, Math.min(duration, note.time - 1.6)))
+      : [0, .4, .8, 1.2, 1.6, 2, 2.4, 2.8];
+    const sampleTimes = [...new Set(candidates.map(value => Math.round(value * 20) / 20))];
+    while (sampleTimes.length < 12) sampleTimes.push(Math.min(duration, sampleTimes.length * .35));
+    const warmTimes = sampleTimes.slice(0, 14);
+    const totalPasses = warmTimes.length + 4;
+    const costs = [];
+    onProgress?.(0, totalPasses, `Warming ${profile.name} animation engine`);
+
+    for (let index = 0; index < warmTimes.length; index += 1) {
+      state.currentTime = warmTimes[index];
+      // Force a few complete backdrop paints up front, then let the chosen cadence behave
+      // normally so the timing sample resembles real playback.
+      if (index < 3) state.lastBackdropAt = 0;
+      const started = performance.now();
+      renderFrame();
+      const cost = performance.now() - started;
+      if (index >= 4) costs.push(cost);
+      onProgress?.(index + 1, totalPasses, `Warming ${profile.name} animation engine`);
+      await nextStartupFrame();
+    }
+
+    // Choose the settled quality *before* the user sees a falling note. The normal adaptive
+    // monitor remains active later and may reduce one more step if the device heats up.
+    const sorted = [...costs].sort((a, b) => a - b);
+    const averageMs = costs.length ? costs.reduce((sum, value) => sum + value, 0) / costs.length : 0;
+    const p90 = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * .9))] : 0;
+    const target = profile.visualInterval || 16.7;
+    const looksHeavy = averageMs > target * .48 || p90 > target * .82;
+    if (looksHeavy) {
+      downgradeParticleQuality();
+      state.backgroundRateScale = Math.max(2, state.backgroundRateScale);
+    }
+
+    // Paint several final-profile frames so shader/gradient/canvas caches are hot after any
+    // quality adjustment made by the benchmark.
+    for (let index = 0; index < 4; index += 1) {
+      state.currentTime = warmTimes[index % warmTimes.length] || 0;
+      if (index === 0) state.lastBackdropAt = 0;
+      renderFrame();
+      onProgress?.(warmTimes.length + index + 1, totalPasses, 'Finalizing smooth playback');
+      await nextStartupFrame();
+    }
+
+    Object.assign(state, snapshot);
+    // Keep the selected performance profile / particle quality / background cadence from the
+    // warm-up, but restore all song/session data exactly as it was before the hidden test.
+    state.lastBackdropAt = 0;
+    state.lastCompanionUiAt = 0;
+    state.backdropMode = '';
+    renderFrame();
+    resetVisualPerformanceMonitor();
+    return { frames: totalPasses, profile: profile.name, averageMs };
   }
 
   function revealLoadedApp() {
@@ -6695,6 +6816,9 @@
     updateMicUI();
     renderSongList();
     selectSong(state.selectedId);
+    // Allocate the final device-specific canvas buffers before caching sprites. Otherwise a
+    // late ResizeObserver pass can invalidate the just-created visual cache as the tour opens.
+    resizeCanvas();
     const startedAt = performance.now();
     let soundResult = null;
     try {
@@ -6706,6 +6830,8 @@
     }
     await preWarmAllNoteVisuals(updateStartupVisualProgress)
       .catch(error => console.warn('Could not prepare the complete visual cache:', error));
+    await preWarmRuntimeVisualPipeline(updateStartupRuntimeProgress)
+      .catch(error => console.warn('Could not warm the runtime visual pipeline:', error));
     const remainingDelay = Math.max(0, 320 - (performance.now() - startedAt));
     if (remainingDelay) await new Promise(resolve => window.setTimeout(resolve, remainingDelay));
     if (els.startupLoaderStatus) els.startupLoaderStatus.textContent = 'Ready to play';
@@ -6716,7 +6842,7 @@
     }
     revealLoadedApp();
     startDemoCatalogPolling();
-    // Walkthrough starts only after both preload passes above have completed.
+    // Walkthrough starts only after sounds, note sprites and hidden runtime warm-up have completed.
     maybeStartWalkthrough();
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {
       const hadController = Boolean(navigator.serviceWorker.controller);
